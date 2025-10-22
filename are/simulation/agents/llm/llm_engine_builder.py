@@ -58,6 +58,9 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
         if engine_config.provider in ["llama-api"]:
             return self._create_llama_api_engine(engine_config)
 
+        if engine_config.provider == "azure":
+            return self._create_azure_engine(engine_config)
+
         if engine_config.provider in ["local", "mock"]:
             return self._create_local_engine(engine_config)
 
@@ -108,6 +111,25 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
             provider="openai",
             endpoint=endpoint,
             api_key=key,
+        )
+        return LiteLLMEngine(model_config=model_config)
+
+    def _create_azure_engine(self, engine_config: LLMEngineConfig) -> LLMEngine:
+        """
+        Create an LLM engine for the azure provider.
+        :param engine_config: Configuration for the engine.
+        :returns: An instance of the LLM engine.
+        """
+        from are.simulation.agents.llm.litellm.litellm_engine import (
+            LiteLLMEngine,
+            LiteLLMModelConfig,
+        )
+
+        model_config = LiteLLMModelConfig(
+            model_name=engine_config.model_name,
+            provider="azure",
+            # endpoint=endpoint,
+            # api_key=key,
         )
         return LiteLLMEngine(model_config=model_config)
 

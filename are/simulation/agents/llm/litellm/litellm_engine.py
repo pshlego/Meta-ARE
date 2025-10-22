@@ -6,6 +6,7 @@
 
 
 import logging
+import traceback
 from typing import Any
 
 from litellm import completion
@@ -18,6 +19,9 @@ from are.simulation.agents.llm.llm_engine import LLMEngine, LLMEngineException
 # TODO: Litellm should be agnostic to the agent or model. Remove this dependency.
 from are.simulation.agents.llm.types import MessageRole
 from are.simulation.agents.multimodal import Attachment
+
+from are.simulation.agents.llm.litellm.cloudgpt_aoai import get_openai_token_provider
+from openai import AzureOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +57,19 @@ Action:
   "action_input": "Mock result"
 }<end_action>
 """
+        self._client = None
+        if self.model_config.provider == "azure":
+            token_provider = get_openai_token_provider(use_broker_login=True)
+            token_provider()
+
+            self._api_version = "2025-04-01-preview"
+            self._base_url = "https://cloudgpt-openai.azure-api.net/openai/"
+
+            self._client = AzureOpenAI(
+                base_url=self._base_url,
+                api_version=self._api_version,
+                azure_ad_token_provider=token_provider
+            )            
 
     def _convert_message_to_litellm_format(
         self, message: dict[str, Any]
@@ -106,14 +123,26 @@ Action:
                 else None
             )
 
-            response = completion(
-                model=self.model_config.model_name,
-                custom_llm_provider=provider,
-                messages=converted_messages,
-                api_base=self.model_config.endpoint,
-                api_key=self.model_config.api_key,
-                mock_response=self.mock_response,
-            )
+            if self.model_config.provider == "azure":
+                assert self._client is not None, "CloudGPT client not initialized."
+                response = completion(
+                    model=self.model_config.model_name,
+                    custom_llm_provider=provider,
+                    messages=converted_messages,
+                    api_base=self._base_url,
+                    api_version=self._api_version,
+                    client=self._client,
+                    mock_response=self.mock_response,
+                )
+            else:
+                response = completion(
+                    model=self.model_config.model_name,
+                    custom_llm_provider=provider,
+                    messages=converted_messages,
+                    api_base=self.model_config.endpoint,
+                    api_key=self.model_config.api_key,
+                    mock_response=self.mock_response,
+                )
 
             assert type(response) is ModelResponse
             assert len(response.choices) >= 1

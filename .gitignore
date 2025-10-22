@@ -181,3 +181,5 @@ workspace*
 **/node_modules
 benchmark_stats.json
 gaia2_results
+
+cloudgpt-apim-token-cache.bin
