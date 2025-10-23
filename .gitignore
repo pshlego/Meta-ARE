@@ -183,3 +183,9 @@ benchmark_stats.json
 gaia2_results
 
 cloudgpt-apim-token-cache.bin
+
+local_demo_filesystem/
+datasets_hf/
+datasets_local/
+benchmark_hf_results/
+benchmark_local_results/
