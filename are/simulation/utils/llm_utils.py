@@ -9,8 +9,10 @@ import logging
 
 from are.simulation.agents.llm.llm_engine import ModelConfig
 
-DEFAULT_MODEL = "meta-llama/llama3-70b-instruct"
-DEFAULT_PROVIDER = "huggingface"
+# DEFAULT_MODEL = "meta-llama/llama3-70b-instruct"
+# DEFAULT_PROVIDER = "huggingface"
+DEFAULT_MODEL = "gpt-5-chat-20251003"
+DEFAULT_PROVIDER = "azure"
 DEFAULT_APP_AGENT = "default_app_agent"
 
 logger = logging.getLogger(__name__)
