@@ -7,6 +7,7 @@
 
 import hashlib
 import json
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -115,6 +116,9 @@ class ScenarioRunnerConfig(BaseModel):
 
     # Max time scenario duration in seconds
     max_time_scenario_duration: int = MAX_TIME_SCENARIO_DURATION
+
+    # Checkpoint configuration (type: CheckpointConfig from are.simulation.checkpoint)
+    checkpoint_config: Any = None
 
     def get_config_hash(self) -> str:
         """

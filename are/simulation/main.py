@@ -149,6 +149,25 @@ def validate_main_scenario_sources(**scenario_params):
     default=False,
     help="List all available scenarios and exit.",
 )
+# Checkpoint options
+@click.option(
+    "--enable-checkpoints",
+    is_flag=True,
+    default=False,
+    help="Enable checkpoint capture during scenario execution.",
+)
+@click.option(
+    "--checkpoint-events",
+    type=str,
+    default="ENV,AGENT,VALIDATION,STOP",
+    help="Comma-separated list of event types to checkpoint (ENV, AGENT, VALIDATION, STOP).",
+)
+@click.option(
+    "--checkpoint-verbose",
+    is_flag=True,
+    default=False,
+    help="Enable verbose logging for checkpoint operations.",
+)
 def main(
     model: str,
     provider: str | None = None,
@@ -173,6 +192,10 @@ def main(
     export: bool = False,
     wait_for_user_input_timeout: float | None = None,
     list_scenarios: bool = False,
+    # Checkpoint parameters
+    enable_checkpoints: bool = False,
+    checkpoint_events: str = "ENV,AGENT,VALIDATION,STOP",
+    checkpoint_verbose: bool = False,
 ):
     """
     Main entry point for the Meta Agents Research Environments scenario runner CLI.
@@ -214,6 +237,30 @@ def main(
     if output_dir is None:
         output_dir = tempfile.mkdtemp(prefix="are_simulation_output_")
 
+    # Create checkpoint configuration if enabled
+    checkpoint_config = None
+    if enable_checkpoints:
+        from pathlib import Path
+        from are.simulation.checkpoint import CheckpointConfig
+        
+        # Parse event types
+        checkpoint_event_set = set(event.strip().upper() for event in checkpoint_events.split(","))
+        
+        # Checkpoints stored in subdirectory of output_dir
+        checkpoint_dir = Path(output_dir) / "checkpoints"
+        
+        checkpoint_config = CheckpointConfig(
+            enabled=True,
+            checkpoint_dir=checkpoint_dir,
+            checkpoint_on_events=checkpoint_event_set,
+            checkpoint_before_events=True,
+            checkpoint_after_events=True,
+            verbose_logging=checkpoint_verbose,
+        )
+        
+        click.echo(f"Checkpointing enabled: storing checkpoints in {checkpoint_dir}")
+        click.echo(f"Checkpoint events: {', '.join(sorted(checkpoint_event_set))}")
+
     # Runner config
     runner_config = MultiScenarioRunnerConfig(
         model=model,
@@ -233,6 +280,7 @@ def main(
         tool_augmentation_config=tool_augmentation_config,
         env_events_config=env_events_config,
         enable_caching=False,
+        checkpoint_config=checkpoint_config,
     )
 
     # Run scenarios by ID

@@ -195,10 +195,23 @@ def process_scenario(
     run_number = getattr(scenario, "run_number", None)
     set_logger_scenario_id(scenario_id, run_number)
 
-    scenario_runner = ScenarioRunner(
-        agent_config_builder=agent_config_builder,
-        agent_builder=agent_builder,
-    )
+    # Create scenario runner - use checkpointable version if checkpoint config provided
+    if config.checkpoint_config is not None and config.checkpoint_config.enabled:
+        from are.simulation.checkpoint import CheckpointableScenarioRunner, CheckpointManager
+        
+        checkpoint_manager = CheckpointManager(config.checkpoint_config)
+        scenario_runner = CheckpointableScenarioRunner(
+            checkpoint_config=config.checkpoint_config,
+            checkpoint_manager=checkpoint_manager,
+            agent_config_builder=agent_config_builder,
+            agent_builder=agent_builder,
+        )
+        logger.info(f"Checkpointing enabled for scenario {scenario_id}")
+    else:
+        scenario_runner = ScenarioRunner(
+            agent_config_builder=agent_config_builder,
+            agent_builder=agent_builder,
+        )
 
     try:
         return maybe_run_scenario(
