@@ -1,18 +1,20 @@
 """
 Checkpoint system for ARE agent benchmarking.
 
-This package provides event-based checkpointing functionality for the ARE framework
-following minimal invasive design principles. All checkpoint logic is contained
-within this package to avoid contaminating existing code.
+This package provides checkpointing functionality for the ARE framework.
+Checkpoints are created after each agent tool call, capturing the complete
+system state (environment, agent, apps) for debugging and analysis.
 
 Key Components:
 - CheckpointConfig: Configuration for checkpoint behavior
 - CheckpointManager: Central coordinator for checkpoint operations
-- CheckpointStorage: Filesystem storage backend for checkpoints
-- EventCheckpointClassifier: Determines which events require checkpoints
 - CheckpointableEnvironment: Environment subclass with checkpointing
 - CheckpointableScenarioRunner: ScenarioRunner subclass with checkpointing
-- CheckpointReplayer: Load and replay from saved checkpoints
+
+Replay Components:
+- CheckpointLoader: Load checkpoints from storage
+- CheckpointReplayRunner: Load checkpoint and continue execution
+- ScenarioMetaLoader: Load scenario metadata (ScenarioRunnerConfig) from scenario_meta.json
 """
 
 from .config import CheckpointConfig
@@ -24,35 +26,32 @@ from .wrappers import (
     create_checkpointable_environment,
 )
 from .replay import (
-    CheckpointReplayer,
+    CheckpointReplayRunner,
     CheckpointLoader,
-    EnvironmentRestorer,
+    ScenarioMetaLoader,
     CheckpointReplayError,
     replay_from_checkpoint,
     list_checkpoints,
+    get_checkpoint_info,
 )
-from .agent_state import (
-    AgentStateCapture,
-    AgentStateRestorer,
-    capture_agent_state,
-    restore_agent_logs,
-)
+from .agent_state import capture_agent_state
 
 __all__ = [
+    # Core checkpointing
     "CheckpointConfig",
     "CheckpointManager",
     "CheckpointableEnvironment",
     "CheckpointableScenarioRunner",
     "create_checkpointable_runner",
     "create_checkpointable_environment",
-    "CheckpointReplayer",
+    # Agent state capture
+    "capture_agent_state",
+    # Replay
+    "CheckpointReplayRunner",
     "CheckpointLoader",
-    "EnvironmentRestorer",
+    "ScenarioMetaLoader",
     "CheckpointReplayError",
     "replay_from_checkpoint",
     "list_checkpoints",
-    "AgentStateCapture",
-    "AgentStateRestorer",
-    "capture_agent_state",
-    "restore_agent_logs",
+    "get_checkpoint_info",
 ]

@@ -1,0 +1,39 @@
+{
+  "app_type": "AgentUserInterface",
+  "app_class_module": "are.simulation.apps.agent_user_interface",
+  "timestamp": 1764056066.0499246,
+  "app_name": "AgentUserInterface",
+  "name": "AgentUserInterface",
+  "seed": 4038443614,
+  "failure_probability": null,
+  "state": {
+    "messages": [
+      {
+        "sender": {
+          "__type__": "Sender",
+          "__repr__": "<Sender.USER: 'User'>",
+          "__str__": "Sender.USER"
+        },
+        "content": "I need to find the image file in the current directory",
+        "attachments": [],
+        "timestamp": 0.0021550655364990234,
+        "time_read": null,
+        "id": "79178b46-40c0-42e7-97d4-ac5f41b87621"
+      },
+      {
+        "sender": {
+          "__type__": "Sender",
+          "__repr__": "<Sender.AGENT: 'Agent'>",
+          "__str__": "Sender.AGENT"
+        },
+        "content": "The image file in the current directory is '/llama.jpg'.",
+        "attachments": [],
+        "timestamp": 4.203034162521362,
+        "time_read": 4.203034162521362,
+        "id": "f2da5ce2-c6e2-4b3f-ac51-b820bae43922"
+      }
+    ]
+  },
+  "has_state": true,
+  "has_load_state": true
+}

@@ -4,6 +4,17 @@ Checkpoint-enabled wrapper classes for key ARE components.
 This module provides wrapper classes that add checkpoint functionality
 to the existing ARE components while maintaining minimal invasive design
 by inheriting and overriding specific methods.
+
+Checkpoint Timing:
+    Checkpoints are created AFTER the ObservationLog is added to the agent's logs.
+    This ensures that when replaying from a checkpoint, the agent has the complete
+    context including the tool call result (observation) from that step.
+    
+    The checkpoint flow is:
+    1. Agent calls tool (ToolCallLog added to agent logs)
+    2. Tool executes and adds event to environment (env.add_to_log called)
+    3. ObservationLog is added to agent logs <- CHECKPOINT CREATED HERE
+    4. Agent continues to next step
 """
 
 from typing import Dict, Any, Optional, List, Union, Callable
@@ -25,10 +36,10 @@ logger = logging.getLogger(__name__)
 
 class CheckpointableEnvironment(Environment):
     """
-    Environment subclass that adds event-based checkpoint functionality.
+    Environment subclass that adds checkpoint functionality for agent tool calls.
     
-    This class inherits from Environment and overrides process_event to create
-    before/after checkpoints at critical event boundaries during scenario execution.
+    This class inherits from Environment and overrides add_to_log to create
+    checkpoints after each agent tool call (AGENT events).
     """
     
     def __init__(
@@ -56,112 +67,129 @@ class CheckpointableEnvironment(Environment):
         self.checkpoint_manager = checkpoint_manager
         self._scenario_id = scenario_id
         self._checkpoint_enabled = True
+        self._pending_checkpoint_event: Optional[Dict[str, Any]] = None  # Track pending checkpoint
         logger.info(f"Checkpointing enabled for scenario {scenario_id}")
     
-    def process_event(self, event):
+    def track_agent_event_for_checkpoint(self, event) -> None:
         """
-        Override process_event to add checkpoint creation at event boundaries.
+        Track an AGENT event for pending checkpoint creation.
+        
+        This is called from add_to_log when an AGENT event is added. The actual
+        checkpoint will be created when ObservationLog is added to agent logs
+        (via setup_agent_checkpoint_callback).
+        
+        Args:
+            event: The AGENT event to track
         """
-        logger.debug(f"process_event called - checkpoint_enabled={self._checkpoint_enabled}, has_manager={self.checkpoint_manager is not None}")
+        if not self._checkpoint_enabled or not self.checkpoint_manager:
+            return
+            
+        try:
+            event_id = getattr(event, 'event_id', str(id(event)))
+            
+            # Get tool/action info from the event
+            action_info = {}
+            if hasattr(event, 'action'):
+                action = event.action
+                if hasattr(action, 'function_name'):
+                    action_info['function_name'] = action.function_name
+                if hasattr(action, 'app'):
+                    app = action.app
+                    if app is not None:
+                        if hasattr(app, 'name'):
+                            action_info['app_name'] = app.name
+                        elif hasattr(app, 'app_name'):
+                            action_info['app_name'] = app.app_name()
+            
+            # Store pending checkpoint info (will be created when observation is added)
+            self._pending_checkpoint_event = {
+                "event_type": "AGENT",
+                "event_id": event_id,
+                "source": "add_to_log",
+                **action_info
+            }
+            logger.debug(f"Tracked AGENT event for pending checkpoint: {event_id}")
+        except Exception as e:
+            logger.warning(f"Failed to track AGENT event: {e}", exc_info=True)
+    
+    def add_to_log(self, events):
+        """
+        Override add_to_log to track AGENT events for checkpoint creation.
+        
+        When an AGENT event is added, we store its info for the pending checkpoint.
+        The actual checkpoint will be created when ObservationLog is added to agent logs
+        (via the callback set up in setup_agent_checkpoint_callback).
+        """
+        from are.simulation.types import EventType
+        
+        # First call the parent to actually add the events
+        super().add_to_log(events)
+        
+        # Track AGENT events for pending checkpoint
+        if not self._checkpoint_enabled or not self.checkpoint_manager:
+            return
+        
+        # Normalize to list
+        if not isinstance(events, list):
+            events = [events]
+        
+        for event in events:
+            event_type = getattr(event, 'event_type', None)
+            if event_type == EventType.AGENT:
+                self.track_agent_event_for_checkpoint(event)
+    
+    def setup_agent_checkpoint_callback(self, agent) -> None:
+        """
+        Set up a callback on the agent to create checkpoints when ObservationLog is added.
+        
+        This ensures checkpoints capture the complete state including the tool call result.
+        
+        Args:
+            agent: The agent instance to set up callback on
+        """
+        from are.simulation.agents.agent_log import ObservationLog
         
         if not self._checkpoint_enabled or not self.checkpoint_manager:
-            logger.debug("Checkpointing not enabled or no manager, calling super().process_event()")
-            return super().process_event(event)
+            logger.debug("Checkpointing not enabled, skipping agent callback setup")
+            return
         
-        # Determine if this event should trigger checkpoints
-        event_type = self._get_event_type_str(event)
-        should_checkpoint = self._should_checkpoint_event(event_type, event)
+        # Get the base agent that has the log_callback
+        base_agent = None
+        if hasattr(agent, 'react_agent'):
+            base_agent = agent.react_agent
+        elif hasattr(agent, 'logs'):
+            base_agent = agent
         
-        logger.info(f"Processing event type={event_type}, should_checkpoint={should_checkpoint}")
+        if base_agent is None:
+            logger.warning("Could not find base agent for checkpoint callback")
+            return
         
-        checkpoint_before_id = None
-        if should_checkpoint:
-            # Create checkpoint BEFORE event execution
-            try:
-                logger.info(f"Creating before-event checkpoint for event_type={event_type}")
-                checkpoint_before_id = self._create_checkpoint(
-                    checkpoint_type="before",
-                    event_info={
-                        "event_type": event_type,
-                        "event_id": getattr(event, 'event_id', str(id(event))),
-                        "event_time": getattr(event, 'event_time', self.current_time),
-                    }
-                )
-                logger.info(f"Created before-event checkpoint: {checkpoint_before_id}")
-            except Exception as e:
-                logger.warning(f"Failed to create before-event checkpoint: {e}", exc_info=True)
+        # Store original callback (if any)
+        original_callback = getattr(base_agent, 'log_callback', None)
         
-        # Execute the original event processing
-        execution_success = False
-        execution_error = None
-        successors = []
-        
-        try:
-            successors = super().process_event(event)
-            execution_success = True
-        except Exception as e:
-            execution_success = False
-            execution_error = str(e)
-            raise
-        finally:
-            if should_checkpoint:
-                # Create checkpoint AFTER event execution
+        def checkpoint_log_callback(log):
+            """Callback that triggers checkpoint when ObservationLog is added."""
+            # Call original callback first if exists
+            if original_callback is not None:
+                original_callback(log)
+            
+            # Create checkpoint when ObservationLog is added and we have a pending event
+            if isinstance(log, ObservationLog) and self._pending_checkpoint_event is not None:
                 try:
-                    logger.info(f"Creating after-event checkpoint for event_type={event_type}")
+                    event_info = self._pending_checkpoint_event
+                    self._pending_checkpoint_event = None  # Clear pending
+                    
+                    logger.info(f"Creating checkpoint after ObservationLog for: {event_info.get('event_id', 'unknown')}")
                     self._create_checkpoint(
-                        checkpoint_type="after",
-                        event_info={
-                            "event_type": event_type,
-                            "event_id": getattr(event, 'event_id', str(id(event))),
-                            "execution_success": execution_success,
-                            "execution_error": execution_error,
-                            "successor_count": len(successors) if successors else 0
-                        },
-                        related_checkpoint_id=checkpoint_before_id
+                        checkpoint_type="after_tool_call",
+                        event_info=event_info
                     )
-                    logger.info(f"Created after-event checkpoint successfully")
                 except Exception as e:
-                    logger.warning(f"Failed to create after-event checkpoint: {e}", exc_info=True)
+                    logger.warning(f"Failed to create checkpoint on ObservationLog: {e}", exc_info=True)
         
-        return successors
-    
-    def _should_checkpoint_event(self, event_type: str, event) -> bool:
-        """Determine if an event should trigger checkpoint creation."""
-        if not self.checkpoint_manager:
-            return False
-        
-        # Check if this event type is configured for checkpointing
-        config = self.checkpoint_manager.config
-        if hasattr(config, 'checkpoint_on_events') and config.checkpoint_on_events:
-            return event_type in config.checkpoint_on_events
-        
-        # Default: checkpoint critical events
-        return event_type in ['ENV', 'AGENT', 'VALIDATION', 'STOP']
-    
-    def _get_event_type_str(self, event) -> str:
-        """Extract event type as string."""
-        if hasattr(event, 'event_type'):
-            event_type = event.event_type
-            # Handle EventType enum: extract just the name part
-            if hasattr(event_type, 'name'):
-                return event_type.name  # Returns 'ENV', 'AGENT', etc.
-            else:
-                # Convert to string and extract the enum value name
-                event_type_str = str(event_type)
-                if '.' in event_type_str:
-                    return event_type_str.split('.')[-1]  # "EventType.ENV" -> "ENV"
-                return event_type_str
-        
-        # Fallback: classify by class name
-        class_name = event.__class__.__name__
-        if 'Stop' in class_name:
-            return 'STOP'
-        elif 'Validation' in class_name:
-            return 'VALIDATION'
-        elif 'Agent' in class_name:
-            return 'AGENT'
-        else:
-            return 'ENV'
+        # Set the callback on the base agent
+        base_agent.log_callback = checkpoint_log_callback
+        logger.info("Agent checkpoint callback configured")
     
     def _create_checkpoint(self, checkpoint_type: str, event_info: Dict[str, Any], 
                           related_checkpoint_id: Optional[str] = None) -> Optional[str]:
@@ -202,7 +230,6 @@ class CheckpointableEnvironment(Environment):
                 # Event system - CRITICAL for replay
                 "event_log": self._capture_event_log(),
                 "event_queue": self._capture_event_queue(),
-                "events_to_schedule": self._capture_events_to_schedule(),
                 
                 # Configuration
                 "configuration": {
@@ -217,11 +244,9 @@ class CheckpointableEnvironment(Environment):
                 # Runtime state
                 "verbose": getattr(self, 'verbose', False),
                 "waiting_for_notification": getattr(self, 'waiting_for_notification', False),
-                "world_logs": getattr(self, 'world_logs', []),
                 
-                # Additional state for replay
-                "graphql_cache": getattr(self, 'graphql_cache', {}),
-                "dump_dir": str(getattr(self, 'dump_dir', None)) if getattr(self, 'dump_dir', None) else None,
+                # World logs - needed for environment state restoration
+                "world_logs": self._capture_world_logs(),
             }
             
             # Add time manager state if available
@@ -248,6 +273,46 @@ class CheckpointableEnvironment(Environment):
             logger.warning(f"Failed to capture event log: {e}")
             return {"error": str(e), "past_events": []}
     
+    def _capture_world_logs(self) -> list:
+        """
+        Capture world_logs with proper log_type field.
+        
+        World logs contain BaseAgentLog subclass instances. We need to serialize
+        them with their log_type to enable proper reconstruction during replay.
+        """
+        try:
+            world_logs = getattr(self, 'world_logs', [])
+            if not world_logs:
+                return []
+            
+            serialized_logs = []
+            for log in world_logs:
+                try:
+                    # Use the log's to_dict method if available
+                    if hasattr(log, 'to_dict'):
+                        log_dict = log.to_dict()
+                    else:
+                        # Fallback to dataclass asdict
+                        from dataclasses import asdict, is_dataclass
+                        if is_dataclass(log):
+                            log_dict = asdict(log)
+                        else:
+                            log_dict = {"content": str(log)}
+                    
+                    # Ensure log_type is included
+                    if 'log_type' not in log_dict and hasattr(log, 'get_type'):
+                        log_dict['log_type'] = log.get_type()
+                    
+                    serialized_logs.append(log_dict)
+                except Exception as e:
+                    logger.warning(f"Failed to serialize world log: {e}")
+                    continue
+            
+            return serialized_logs
+        except Exception as e:
+            logger.warning(f"Failed to capture world_logs: {e}")
+            return []
+    
     def _capture_event_queue(self) -> Dict[str, Any]:
         """Capture event queue state."""
         try:
@@ -265,17 +330,6 @@ class CheckpointableEnvironment(Environment):
             logger.warning(f"Failed to capture event queue: {e}")
             return {"error": str(e), "future_events": [], "already_scheduled": []}
     
-    def _capture_events_to_schedule(self) -> list:
-        """Capture events_to_schedule list."""
-        try:
-            if hasattr(self, 'events_to_schedule') and self.events_to_schedule:
-                return [event.to_dict() if hasattr(event, 'to_dict') else str(event) 
-                        for event in self.events_to_schedule]
-            return []
-        except Exception as e:
-            logger.warning(f"Failed to capture events_to_schedule: {e}")
-            return []
-    
     def _capture_time_manager_state(self) -> Dict[str, Any]:
         """Capture time manager state."""
         try:
@@ -290,64 +344,31 @@ class CheckpointableEnvironment(Environment):
     
     def _capture_agent_state(self) -> Dict[str, Any]:
         """
-        Capture complete agent state including logs and history.
+        Capture agent state including logs (chat history).
         
-        Uses agent reference provided by ScenarioRunner via _get_agent_for_checkpoint
-        callback to capture comprehensive agent state including logs, iterations,
-        and internal state.
+        Uses agent reference provided by ScenarioRunner to capture the agent's
+        logs which contain the full conversation history needed for replay.
         """
-        try:
-            # Capture basic agent-related environment state
-            agent_state = {
-                "timestamp": time.time(),
-                "status": "captured",
-                "capture_method": "agent_reference",
+        if not self._get_agent_for_checkpoint:
+            return {
+                "error": "No agent reference available",
+                "note": "Agent state capture requires ScenarioRunner to provide agent reference."
             }
-            
-            # Try to capture agent logs if add_event_to_agent_log callback exists
-            if hasattr(self, 'add_event_to_agent_log') and self.add_event_to_agent_log:
-                agent_state["has_agent_log_callback"] = True
+        
+        try:
+            agent = self._get_agent_for_checkpoint()
+            if agent:
+                # Use the agent_state module to capture state
+                return capture_agent_state(agent)
             else:
-                agent_state["has_agent_log_callback"] = False
-            
-            # Capture agent action validators state
-            if hasattr(self, 'agent_action_validators'):
-                agent_state["agent_action_validators_count"] = len(self.agent_action_validators)
-                agent_state["agent_action_validators"] = [
-                    {
-                        "validator_type": type(validator).__name__,
-                        "validator_class": f"{type(validator).__module__}.{type(validator).__name__}"
-                    }
-                    for validator in self.agent_action_validators
-                ]
-            
-            # Capture full agent state if agent reference is available
-            if self._get_agent_for_checkpoint:
-                try:
-                    agent = self._get_agent_for_checkpoint()
-                    if agent:
-                        # Use the agent_state module to capture comprehensive agent state
-                        agent_state.update(capture_agent_state(agent))
-                        agent_state["full_agent_state_captured"] = True
-                        logger.debug(f"Captured full agent state with {agent_state.get('logs_count', 0)} logs")
-                    else:
-                        agent_state["full_agent_state_captured"] = False
-                        agent_state["note"] = "Agent reference returned None"
-                except Exception as e:
-                    logger.warning(f"Failed to capture agent state via reference: {e}")
-                    agent_state["full_agent_state_captured"] = False
-                    agent_state["capture_error"] = str(e)
-            else:
-                agent_state["full_agent_state_captured"] = False
-                agent_state["note"] = (
-                    "No agent reference available. "
-                    "Agent state capture requires ScenarioRunner to provide agent reference."
-            )
-            
-            return agent_state
+                return {
+                    "note": "Agent not yet built at checkpoint time.",
+                    "logs": [],
+                    "logs_count": 0
+                }
         except Exception as e:
             logger.warning(f"Failed to capture agent state: {e}")
-            return {"error": str(e), "timestamp": time.time()}
+            return {"error": str(e), "logs": [], "logs_count": 0}
     
     def _capture_apps_state(self) -> Dict[str, Any]:
         """Capture complete apps state for replay."""
@@ -460,6 +481,34 @@ class CheckpointableScenarioRunner(ScenarioRunner):
         self.checkpoint_manager = checkpoint_manager or CheckpointManager(checkpoint_config)
         logger.info("Checkpointing enabled for ScenarioRunner")
     
+    def _set_scenario_config_for_checkpointing(self, config, scenario) -> None:
+        """
+        Pass scenario runner config to checkpoint manager for saving scenario_meta.json.
+        
+        Args:
+            config: ScenarioRunnerConfig
+            scenario: Scenario instance
+        """
+        if not self.checkpoint_manager:
+            return
+        
+        # Extract scenario creation/initialization params from config if available
+        scenario_creation_params = getattr(config, 'scenario_creation_params', None)
+        scenario_initialization_params = getattr(config, 'scenario_initialization_params', None)
+        
+        # Also try to get params from scenario directly
+        if scenario_creation_params is None:
+            scenario_creation_params = getattr(scenario, 'creation_params', None)
+        if scenario_initialization_params is None:
+            scenario_initialization_params = getattr(scenario, 'initialization_params', None)
+        
+        self.checkpoint_manager.set_scenario_config(
+            runner_config=config,
+            scenario_creation_params=scenario_creation_params,
+            scenario_initialization_params=scenario_initialization_params,
+        )
+        logger.debug("Scenario config passed to checkpoint manager")
+    
     def run(self, config, scenario, completed_events=None):
         """
         Override run to integrate checkpointing.
@@ -470,6 +519,9 @@ class CheckpointableScenarioRunner(ScenarioRunner):
         
         # Get scenario ID for checkpointing
         scenario_id = getattr(scenario, 'scenario_id', 'unknown_scenario')
+        
+        # Pass scenario config to checkpoint manager for scenario_meta.json
+        self._set_scenario_config_for_checkpointing(config, scenario)
         
         # Set up monkey-patching BEFORE calling super().run()
         original_env_class = None
@@ -507,10 +559,22 @@ class CheckpointableScenarioRunner(ScenarioRunner):
             original_agent_builder_build = self.agent_builder.build
             
             def build_with_capture(*args, **kwargs):
-                """Wrapper that captures agent reference after building."""
+                """Wrapper that captures agent reference for checkpoint state capture."""
+                logger.info(f"build_with_capture called - capturing agent")
                 agent = original_agent_builder_build(*args, **kwargs)
                 runner_self._current_agent = agent
-                logger.debug(f"Captured agent reference: {type(agent).__name__}")
+                logger.info(f"Captured agent reference: {type(agent).__name__}")
+                
+                # Get the environment from kwargs (if passed) or from agent
+                env = kwargs.get('env', None)
+                if env is None and hasattr(agent, 'env'):
+                    env = agent.env
+                
+                # Set up agent checkpoint callback for proper checkpoint timing
+                if env is not None and isinstance(env, CheckpointableEnvironment):
+                    env.setup_agent_checkpoint_callback(agent)
+                    logger.info("Agent checkpoint callback configured for proper checkpoint timing")
+                
                 return agent
             
             # Apply monkey patches

@@ -1,0 +1,12 @@
+{
+  "checkpoint_id": "event_1_after_tool_call",
+  "scenario_id": "scenario_find_image_file",
+  "simulation_time": 1764057326.1994612,
+  "wall_clock_time": 1764057326.201764,
+  "created_at": "2025-11-25 07:55:26",
+  "checkpoint_type": "after_tool_call",
+  "trigger_event_id": "AGENT-SandboxLocalFileSystem.ls-20aad5c0-a22b-4eb0-bde9-a956d2861b92",
+  "trigger_event_type": "AGENT",
+  "event_sequence_number": 1,
+  "checkpoint_sequence": 1
+}

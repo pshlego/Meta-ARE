@@ -154,13 +154,7 @@ def validate_main_scenario_sources(**scenario_params):
     "--enable-checkpoints",
     is_flag=True,
     default=False,
-    help="Enable checkpoint capture during scenario execution.",
-)
-@click.option(
-    "--checkpoint-events",
-    type=str,
-    default="ENV,AGENT,VALIDATION,STOP",
-    help="Comma-separated list of event types to checkpoint (ENV, AGENT, VALIDATION, STOP).",
+    help="Enable checkpoint capture during scenario execution (captures after each agent tool call).",
 )
 @click.option(
     "--checkpoint-verbose",
@@ -194,7 +188,6 @@ def main(
     list_scenarios: bool = False,
     # Checkpoint parameters
     enable_checkpoints: bool = False,
-    checkpoint_events: str = "ENV,AGENT,VALIDATION,STOP",
     checkpoint_verbose: bool = False,
 ):
     """
@@ -243,23 +236,17 @@ def main(
         from pathlib import Path
         from are.simulation.checkpoint import CheckpointConfig
         
-        # Parse event types
-        checkpoint_event_set = set(event.strip().upper() for event in checkpoint_events.split(","))
-        
         # Checkpoints stored in subdirectory of output_dir
         checkpoint_dir = Path(output_dir) / "checkpoints"
         
         checkpoint_config = CheckpointConfig(
             enabled=True,
             checkpoint_dir=checkpoint_dir,
-            checkpoint_on_events=checkpoint_event_set,
-            checkpoint_before_events=True,
-            checkpoint_after_events=True,
             verbose_logging=checkpoint_verbose,
         )
         
         click.echo(f"Checkpointing enabled: storing checkpoints in {checkpoint_dir}")
-        click.echo(f"Checkpoint events: {', '.join(sorted(checkpoint_event_set))}")
+        click.echo(f"Checkpoints will be created after each agent tool call")
 
     # Runner config
     runner_config = MultiScenarioRunnerConfig(

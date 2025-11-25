@@ -1,0 +1,7 @@
+{
+  "event_type": "AGENT",
+  "event_id": "AGENT-AgentUserInterface.send_message_to_user-62a61a97-13e5-4aa9-999d-f73618e783f7",
+  "source": "add_to_log",
+  "function_name": "send_message_to_user",
+  "app_name": "AgentUserInterface"
+}

@@ -1,0 +1,12 @@
+{
+  "checkpoint_id": "event_2_after_tool_call",
+  "scenario_id": "scenario_find_image_file",
+  "simulation_time": 1764057327.6326537,
+  "wall_clock_time": 1764057327.6347163,
+  "created_at": "2025-11-25 07:55:27",
+  "checkpoint_type": "after_tool_call",
+  "trigger_event_id": "AGENT-AgentUserInterface.send_message_to_user-bb52f1cb-f3f1-486b-b713-fccff0f22308",
+  "trigger_event_type": "AGENT",
+  "event_sequence_number": 2,
+  "checkpoint_sequence": 2
+}

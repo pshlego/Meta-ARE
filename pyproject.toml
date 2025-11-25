@@ -19,6 +19,7 @@ Repository = "https://github.com/facebookresearch/meta-agents-research-environme
 are-benchmark = "are.simulation.benchmark:main"
 are-run = "are.simulation.main:main"
 are-gui = "are.simulation.gui.cli:main"
+are-checkpoint = "are.simulation.checkpoint.cli:main"
 
 [tool.hatch.metadata]
 allow-direct-references = true

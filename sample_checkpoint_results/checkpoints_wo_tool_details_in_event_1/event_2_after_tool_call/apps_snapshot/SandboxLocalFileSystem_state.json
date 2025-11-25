@@ -1,0 +1,64 @@
+{
+  "app_type": "SandboxLocalFileSystem",
+  "app_class_module": "are.simulation.apps.sandbox_file_system",
+  "timestamp": 1764056066.0489764,
+  "app_name": "SandboxLocalFileSystem",
+  "name": "SandboxLocalFileSystem",
+  "seed": 2075246799,
+  "failure_probability": null,
+  "state": {
+    "files": {
+      "name": "",
+      "type": "directory",
+      "children": [
+        {
+          "name": "30051793-62e2-411e-9387-c8883cb700eb.txt",
+          "type": "file"
+        },
+        {
+          "name": "ffb579ca-8e84-40b2-bdb1-cf53e5e67473.txt",
+          "type": "file"
+        },
+        {
+          "name": "0439df7a-0fe5-493b-be98-43e614c1e62c.txt",
+          "type": "file"
+        },
+        {
+          "name": "9ab83e19-25ad-4535-a490-63c81da70a11.txt",
+          "type": "file"
+        },
+        {
+          "name": "llama.jpg",
+          "type": "file"
+        },
+        {
+          "name": "7caf8b8e-2ecb-4865-bd64-c5b247064ad7.txt",
+          "type": "file"
+        },
+        {
+          "name": "edfcbb20-5b50-41c9-b57c-d3693965f5b3.txt",
+          "type": "file"
+        },
+        {
+          "name": "ec9b26c0-6f34-4c68-a436-896b3a483331.txt",
+          "type": "file"
+        },
+        {
+          "name": "a7cbdbe5-6222-4e66-9f01-64a00649bc3c.txt",
+          "type": "file"
+        },
+        {
+          "name": "9c2b7755-3cc9-4286-907d-f5632371a210.txt",
+          "type": "file"
+        },
+        {
+          "name": "a6a892f4-004c-4cdf-9070-87368805f422.txt",
+          "type": "file"
+        }
+      ]
+    },
+    "tmpdir": "/tmp/are_simulation_sandbox_0vp6x259/are_simulation_fs_sandbox_d4i8f15m"
+  },
+  "has_state": true,
+  "has_load_state": true
+}

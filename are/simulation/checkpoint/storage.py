@@ -157,11 +157,6 @@ class CheckpointStorage:
                 for app_name, app_state in checkpoint_data["apps"].items():
                     self._save_json_file(apps_dir / f"{app_name}_state.json", app_state)
             
-            if "execution_context" in checkpoint_data:
-                self._save_json_file(checkpoint_dir / "execution_context.json", checkpoint_data["execution_context"])
-            
-
-            
             if self.verbose:
                 self.logger.info(f"Successfully saved checkpoint {checkpoint_id}")
             
@@ -223,10 +218,6 @@ class CheckpointStorage:
                 for app_file in apps_dir.glob("*_state.json"):
                     app_name = app_file.stem.replace("_state", "")
                     checkpoint_data["apps"][app_name] = self._load_json_file(app_file)
-            
-            execution_context_file = checkpoint_dir / "execution_context.json"
-            if execution_context_file.exists():
-                checkpoint_data["execution_context"] = self._load_json_file(execution_context_file)
             
             if self.verbose:
                 self.logger.info(f"Successfully loaded checkpoint {checkpoint_id}")

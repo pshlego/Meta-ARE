@@ -1,8 +1,8 @@
 """
-Checkpoint metadata structures for event-based checkpointing.
+Checkpoint metadata structures.
 
-This module defines the metadata classes that capture checkpoint context
-and timing information, following the minimal invasive design principle.
+This module defines the metadata dataclass that captures checkpoint context
+and timing information.
 """
 
 from dataclasses import dataclass
@@ -14,7 +14,7 @@ from datetime import datetime
 @dataclass
 class CheckpointMetadata:
     """
-    Metadata for a single checkpoint, capturing event context and timing.
+    Metadata for a single checkpoint.
     
     This class stores essential metadata about when and why a checkpoint
     was created. Detailed system state is captured separately in the checkpoint data.
@@ -24,23 +24,18 @@ class CheckpointMetadata:
     checkpoint_id: str
     scenario_id: str
     
-    # Event timing information
+    # Timing information
     simulation_time: float          # Simulation time when checkpoint was created
     wall_clock_time: float         # Real-world timestamp
     
     # Event context
-    checkpoint_type: str           # "before_env", "after_agent", "scenario_init", etc.
+    checkpoint_type: str           # "after_tool_call", etc.
     trigger_event_id: Optional[str] = None    # ID of event that triggered this checkpoint
-    trigger_event_type: Optional[str] = None  # Type of triggering event (ENV/AGENT/VALIDATION)
+    trigger_event_type: Optional[str] = None  # Type of triggering event (AGENT)
     
     # Checkpoint sequence information
     event_sequence_number: int = 0  # Sequential event number in scenario
     checkpoint_sequence: int = 0    # Sequential checkpoint number
-    
-    # System state summary
-    agent_turn: int = 0                       # Current agent turn number
-    events_completed_count: int = 0           # Total events processed so far
-    events_pending_count: int = 0             # Events remaining in queue
     
     def __post_init__(self):
         """Set wall clock time if not provided."""
@@ -51,11 +46,6 @@ class CheckpointMetadata:
     def created_at(self) -> str:
         """Human-readable timestamp when checkpoint was created."""
         return datetime.fromtimestamp(self.wall_clock_time).strftime("%Y-%m-%d %H:%M:%S")
-    
-    @property
-    def is_event_boundary_checkpoint(self) -> bool:
-        """Check if this checkpoint was triggered by an event boundary."""
-        return self.trigger_event_id is not None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert metadata to dictionary for JSON serialization."""
@@ -70,9 +60,6 @@ class CheckpointMetadata:
             'trigger_event_type': self.trigger_event_type,
             'event_sequence_number': self.event_sequence_number,
             'checkpoint_sequence': self.checkpoint_sequence,
-            'agent_turn': self.agent_turn,
-            'events_completed_count': self.events_completed_count,
-            'events_pending_count': self.events_pending_count,
         }
     
     @classmethod
@@ -108,5 +95,4 @@ class CheckpointMetadata:
             event_sequence_number=event_sequence_number,
             checkpoint_sequence=checkpoint_sequence
         )
-
 

@@ -1,0 +1,27 @@
+{
+  "app_type": "AgentUserInterface",
+  "app_class_module": "are.simulation.apps.agent_user_interface",
+  "timestamp": 1764056064.6640317,
+  "app_name": "AgentUserInterface",
+  "name": "AgentUserInterface",
+  "seed": 4038443614,
+  "failure_probability": null,
+  "state": {
+    "messages": [
+      {
+        "sender": {
+          "__type__": "Sender",
+          "__repr__": "<Sender.USER: 'User'>",
+          "__str__": "Sender.USER"
+        },
+        "content": "I need to find the image file in the current directory",
+        "attachments": [],
+        "timestamp": 0.0021550655364990234,
+        "time_read": null,
+        "id": "79178b46-40c0-42e7-97d4-ac5f41b87621"
+      }
+    ]
+  },
+  "has_state": true,
+  "has_load_state": true
+}

@@ -1,0 +1,7 @@
+{
+  "event_type": "AGENT",
+  "event_id": "AGENT-SandboxLocalFileSystem.ls-8bd0e6ae-c9dc-4f67-8c71-3b9507a3366b",
+  "source": "add_to_log",
+  "function_name": "ls",
+  "app_name": "SandboxLocalFileSystem"
+}

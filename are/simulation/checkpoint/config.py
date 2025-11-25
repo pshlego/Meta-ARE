@@ -14,20 +14,22 @@ from typing import Optional, Set
 @dataclass
 class CheckpointConfig:
     """
-    Configuration for the event-based checkpoint system with JSON storage.
+    Configuration for the checkpoint system with JSON storage.
     
     This class encapsulates core checkpoint settings to avoid
     contaminating existing ARE configuration classes.
+    
+    Note: The current implementation only captures checkpoints after agent tool calls
+    (AGENT events via add_to_log). The checkpoint_on_events field is retained for
+    future extensibility but currently only AGENT is used.
     """
     
     # Basic checkpoint settings
     enabled: bool = False
     checkpoint_dir: Path = Path("./checkpoints")
     
-    # Event-based checkpoint configuration
-    checkpoint_on_events: Optional[Set[str]] = None  # {"ENV", "AGENT", "VALIDATION"}
-    checkpoint_before_events: bool = True
-    checkpoint_after_events: bool = True
+    # Event-based checkpoint configuration (currently only AGENT is used)
+    checkpoint_on_events: Optional[Set[str]] = None  # Only "AGENT" is currently active
     
     # Debug settings
     verbose_logging: bool = False
@@ -38,9 +40,9 @@ class CheckpointConfig:
         if isinstance(self.checkpoint_dir, str):
             self.checkpoint_dir = Path(self.checkpoint_dir)
         
-        # Set default events to checkpoint if none specified
+        # Set default to AGENT only (tool calls after each agent iteration)
         if self.checkpoint_on_events is None:
-            self.checkpoint_on_events = {"ENV", "AGENT", "VALIDATION", "STOP"}
+            self.checkpoint_on_events = {"AGENT"}
         
         # Ensure checkpoint directory exists
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -65,8 +67,6 @@ class CheckpointConfig:
             'enabled': self.enabled,
             'checkpoint_dir': str(self.checkpoint_dir),
             'checkpoint_on_events': list(self.checkpoint_on_events) if self.checkpoint_on_events else [],
-            'checkpoint_before_events': self.checkpoint_before_events,
-            'checkpoint_after_events': self.checkpoint_after_events,
             'verbose_logging': self.verbose_logging,
         }
     
@@ -80,14 +80,12 @@ class CheckpointConfig:
         return cls(**data)
     
     @classmethod
-    def create_default_event_based(cls, checkpoint_dir: str = "./checkpoints") -> 'CheckpointConfig':
-        """Create a default event-based checkpoint configuration."""
+    def create_default(cls, checkpoint_dir: str = "./checkpoints") -> 'CheckpointConfig':
+        """Create a default checkpoint configuration (captures after each agent tool call)."""
         return cls(
             enabled=True,
             checkpoint_dir=Path(checkpoint_dir),
-            checkpoint_on_events={"ENV", "AGENT", "VALIDATION", "STOP"},
-            checkpoint_before_events=True,
-            checkpoint_after_events=True,
+            checkpoint_on_events={"AGENT"},
             verbose_logging=True,
         )
     
@@ -97,8 +95,6 @@ class CheckpointConfig:
         return cls(
             enabled=True,
             checkpoint_dir=Path(checkpoint_dir),
-            checkpoint_on_events={"AGENT"},  # Only checkpoint agent events for testing
-            checkpoint_before_events=True,
-            checkpoint_after_events=False,   # Reduce checkpoint volume for testing
+            checkpoint_on_events={"AGENT"},
             verbose_logging=True,
         )
