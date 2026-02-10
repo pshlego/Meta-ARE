@@ -154,7 +154,7 @@ def validate_main_scenario_sources(**scenario_params):
     "--enable-checkpoints",
     is_flag=True,
     default=False,
-    help="Enable checkpoint capture during scenario execution (captures after each agent tool call).",
+    help="Enable checkpoint capture during scenario execution (captures before and after each agent tool call).",
 )
 @click.option(
     "--checkpoint-verbose",
@@ -246,7 +246,7 @@ def main(
         )
         
         click.echo(f"Checkpointing enabled: storing checkpoints in {checkpoint_dir}")
-        click.echo(f"Checkpoints will be created after each agent tool call")
+        click.echo(f"Checkpoints will be created before and after each agent tool call")
 
     # Runner config
     runner_config = MultiScenarioRunnerConfig(

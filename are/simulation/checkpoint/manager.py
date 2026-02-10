@@ -120,16 +120,20 @@ class CheckpointManager:
     
     def create_event_checkpoint(self, scenario_id: str, checkpoint_type: str, 
                               simulation_time: float, trigger_event_data: Dict[str, Any],
-                              system_state: Dict[str, Any]) -> Optional[str]:
+                              system_state: Dict[str, Any],
+                              increment_event_sequence: bool = True) -> Optional[str]:
         """
         Create a checkpoint triggered by an event.
         
         Args:
             scenario_id: Identifier for the scenario
-            checkpoint_type: Type of checkpoint (e.g., "after_tool_call")
+            checkpoint_type: Type of checkpoint (e.g., "before_tool_call", "after_tool_call")
             simulation_time: Current simulation time
             trigger_event_data: Data about the triggering event
             system_state: Complete system state to checkpoint
+            increment_event_sequence: If True, increment event sequence counter.
+                Set to False when creating a second checkpoint for the same event
+                (e.g., after_tool_call following a before_tool_call for the same tool call).
             
         Returns:
             Checkpoint ID if successful, None otherwise
@@ -142,7 +146,8 @@ class CheckpointManager:
         
         # Generate checkpoint ID
         self.checkpoint_sequence_counter += 1
-        self.event_sequence_counter += 1
+        if increment_event_sequence:
+            self.event_sequence_counter += 1
         checkpoint_id = f"event_{self.event_sequence_counter}_{checkpoint_type}"
         
         # Create metadata

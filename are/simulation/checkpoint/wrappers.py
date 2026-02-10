@@ -6,15 +6,24 @@ to the existing ARE components while maintaining minimal invasive design
 by inheriting and overriding specific methods.
 
 Checkpoint Timing:
-    Checkpoints are created AFTER the ObservationLog is added to the agent's logs.
-    This ensures that when replaying from a checkpoint, the agent has the complete
-    context including the tool call result (observation) from that step.
+    Two checkpoints are created around each agent tool call:
+    
+    1. BEFORE tool call: Created when ToolCallLog is added to agent logs.
+       Captures the agent's decision (which tool, what arguments) before execution.
+    
+    2. AFTER tool call: Created when ObservationLog is added to agent logs.
+       Captures the complete state including the tool result (observation).
     
     The checkpoint flow is:
-    1. Agent calls tool (ToolCallLog added to agent logs)
-    2. Tool executes and adds event to environment (env.add_to_log called)
-    3. ObservationLog is added to agent logs <- CHECKPOINT CREATED HERE
-    4. Agent continues to next step
+    1. Agent calls tool (LLMOutputThoughtActionLog added to agent logs)
+    2. ToolCallLog is added to agent logs      <- BEFORE_TOOL_CALL CHECKPOINT
+    3. Tool executes
+    4. AGENT event added to environment log (env.add_to_log)
+    5. ObservationLog is added to agent logs    <- AFTER_TOOL_CALL CHECKPOINT
+    6. Agent continues to next step
+    
+    Both checkpoints for the same tool call share the same event sequence number
+    (e.g., event_1_before_tool_call and event_1_after_tool_call).
 """
 
 from typing import Dict, Any, Optional, List, Union, Callable
@@ -68,6 +77,7 @@ class CheckpointableEnvironment(Environment):
         self._scenario_id = scenario_id
         self._checkpoint_enabled = True
         self._pending_checkpoint_event: Optional[Dict[str, Any]] = None  # Track pending checkpoint
+        self._before_checkpoint_created = False  # Track if before_tool_call was created for current event
         logger.info(f"Checkpointing enabled for scenario {scenario_id}")
     
     def track_agent_event_for_checkpoint(self, event) -> None:
@@ -140,14 +150,16 @@ class CheckpointableEnvironment(Environment):
     
     def setup_agent_checkpoint_callback(self, agent) -> None:
         """
-        Set up a callback on the agent to create checkpoints when ObservationLog is added.
+        Set up a callback on the agent to create checkpoints around tool calls.
         
-        This ensures checkpoints capture the complete state including the tool call result.
+        Two checkpoint types are supported:
+        - before_tool_call: Created when ToolCallLog is added (before tool executes)
+        - after_tool_call: Created when ObservationLog is added (after tool completes)
         
         Args:
             agent: The agent instance to set up callback on
         """
-        from are.simulation.agents.agent_log import ObservationLog
+        from are.simulation.agents.agent_log import ObservationLog, ToolCallLog
         
         if not self._checkpoint_enabled or not self.checkpoint_manager:
             logger.debug("Checkpointing not enabled, skipping agent callback setup")
@@ -167,32 +179,66 @@ class CheckpointableEnvironment(Environment):
         # Store original callback (if any)
         original_callback = getattr(base_agent, 'log_callback', None)
         
+        # Get which checkpoint types are enabled
+        config = self.checkpoint_manager.config
+        before_enabled = config.should_create_checkpoint_type("before_tool_call")
+        after_enabled = config.should_create_checkpoint_type("after_tool_call")
+        
         def checkpoint_log_callback(log):
-            """Callback that triggers checkpoint when ObservationLog is added."""
+            """Callback that triggers checkpoints around tool calls."""
             # Call original callback first if exists
             if original_callback is not None:
                 original_callback(log)
             
-            # Create checkpoint when ObservationLog is added and we have a pending event
-            if isinstance(log, ObservationLog) and self._pending_checkpoint_event is not None:
+            # BEFORE TOOL CALL: checkpoint when ToolCallLog is added
+            if before_enabled and isinstance(log, ToolCallLog):
+                try:
+                    self._before_checkpoint_created = True
+                    # Build event info from the ToolCallLog
+                    event_info = {
+                        "event_type": "AGENT",
+                        "event_id": f"tool_call_{log.tool_name}",
+                        "source": "agent_log_callback",
+                        "tool_name": log.tool_name,
+                        "tool_arguments": str(log.tool_arguments) if log.tool_arguments else "",
+                    }
+                    logger.info(f"Creating before_tool_call checkpoint for: {log.tool_name}")
+                    self._create_checkpoint(
+                        checkpoint_type="before_tool_call",
+                        event_info=event_info,
+                        increment_event_sequence=True,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create before_tool_call checkpoint: {e}", exc_info=True)
+            
+            # AFTER TOOL CALL: checkpoint when ObservationLog is added and we have a pending event
+            if after_enabled and isinstance(log, ObservationLog) and self._pending_checkpoint_event is not None:
                 try:
                     event_info = self._pending_checkpoint_event
                     self._pending_checkpoint_event = None  # Clear pending
                     
-                    logger.info(f"Creating checkpoint after ObservationLog for: {event_info.get('event_id', 'unknown')}")
+                    # If before_tool_call was already created for this event,
+                    # don't increment event sequence (same tool call event)
+                    increment = not self._before_checkpoint_created
+                    
+                    logger.info(f"Creating after_tool_call checkpoint for: {event_info.get('event_id', 'unknown')}")
                     self._create_checkpoint(
                         checkpoint_type="after_tool_call",
-                        event_info=event_info
+                        event_info=event_info,
+                        increment_event_sequence=increment,
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to create checkpoint on ObservationLog: {e}", exc_info=True)
+                    logger.warning(f"Failed to create after_tool_call checkpoint: {e}", exc_info=True)
+                finally:
+                    self._before_checkpoint_created = False
         
         # Set the callback on the base agent
         base_agent.log_callback = checkpoint_log_callback
-        logger.info("Agent checkpoint callback configured")
+        logger.info(f"Agent checkpoint callback configured (before={before_enabled}, after={after_enabled})")
     
     def _create_checkpoint(self, checkpoint_type: str, event_info: Dict[str, Any], 
-                          related_checkpoint_id: Optional[str] = None) -> Optional[str]:
+                          related_checkpoint_id: Optional[str] = None,
+                          increment_event_sequence: bool = True) -> Optional[str]:
         """Create a checkpoint with comprehensive state capture."""
         try:
             if not self._scenario_id or not self.checkpoint_manager:
@@ -208,7 +254,8 @@ class CheckpointableEnvironment(Environment):
                     "environment": self._capture_environment_state(),
                     "agent": self._capture_agent_state(),
                     "apps": self._capture_apps_state()
-                }
+                },
+                increment_event_sequence=increment_event_sequence,
             )
         except Exception as e:
             logger.error(f"Failed to create checkpoint: {e}")

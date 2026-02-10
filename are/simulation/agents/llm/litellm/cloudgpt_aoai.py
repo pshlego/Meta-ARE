@@ -1,7 +1,116 @@
 from __future__ import annotations
+from typing import Literal
+
+"""
+Available models for CloudGPT OpenAI
+"""
+cloudgpt_available_models = Literal[
+    ##########################################################################
+    # OpenAI Models
+    ##########################################################################
+    # Current OpenAI models
+    "gpt-4o-20240513",  # ChatCompletions, Responses
+    "gpt-4o-20240806",  # ChatCompletions, Responses
+    "gpt-4o-20241120",  # ChatCompletions, Responses
+    "gpt-4o-mini-20240718",  # ChatCompletions, Responses
+    "gpt-4.1-20250414",  # ChatCompletions, Responses
+    "gpt-4.1-mini-20250414",  # ChatCompletions, Responses
+    "gpt-4.1-nano-20250414",  # ChatCompletions, Responses
+    "gpt-5-20250807",  # ChatCompletions, Responses
+    "gpt-5-mini-20250807",  # ChatCompletions, Responses
+    "gpt-5-nano-20250807",  # ChatCompletions, Responses
+    "gpt-5-pro-20251006",  # ChatCompletions, Responses
+    "gpt-5.1-20251113",  # ChatCompletions, Responses
+    "gpt-5.2-20251211",  # ChatCompletions, Responses
+    # Chat models
+    "gpt-5-chat-20250807",  # ChatCompletions, Responses
+    "gpt-5-chat-20251003",  # ChatCompletions, Responses
+    "gpt-5.1-chat-20251113",  # ChatCompletions, Responses
+    "gpt-5.2-chat-20251211",  # ChatCompletions, Responses
+    # Coding models
+    "codex-mini-20250516",  # Responses
+    "gpt-5-codex-20250915",  # Responses
+    "gpt-5.1-codex-20251113",  # Responses
+    "gpt-5.1-codex-mini-20251113",  # Responses
+    "gpt-5.1-codex-max-20251204",  # Responses
+    "gpt-5.2-codex-20260114",  # Responses
+    # Computer use models
+    "computer-use-preview-20250311",  # Responses
+    # Reasoning models
+    "o1-20241217", # ChatCompletions, Responses
+    "o3-mini-20250131", # ChatCompletions, Responses
+    "o3-20250416",  # ChatCompletions, Responses
+    "o3-pro-20250610",  # Responses
+    "o3-deep-research-20250626",  # Responses
+    "o4-mini-20250416",  # ChatCompletions, Responses
+    # Embedding models
+    "text-embedding-ada-002", # Embeddings
+    "text-embedding-3-small", # Embeddings
+    "text-embedding-3-large", # Embeddings
+    # Open source models
+    "gpt-oss-20b", # ChatCompletions
+    "gpt-oss-120b", # ChatCompletions
+    ##########################################################################
+    # xAI Models
+    ##########################################################################
+    "grok-3", # ChatCompletions
+    "grok-3-mini", # ChatCompletions
+    "grok-4", # ChatCompletions
+    "grok-4-fast-reasoning", # ChatCompletions
+    "grok-4-fast-non-reasoning", # ChatCompletions
+    "grok-code-fast-1", # ChatCompletions
+    ##########################################################################
+    # DeepSeek Models
+    ##########################################################################
+    "DeepSeek-V3-0324", # ChatCompletions
+    "DeepSeek-R1", # ChatCompletions
+    "DeepSeek-R1-0528", # ChatCompletions
+    "DeepSeek-V3.1", # ChatCompletions
+    "DeepSeek-V3.2", # ChatCompletions
+    "DeepSeek-V3.2-Speciale", # ChatCompletions
+    ##########################################################################
+    # Moonshot Models
+    ##########################################################################
+    "Kimi-K2-Thinking", # ChatCompletions
+    ##########################################################################
+    # Image Generation Models
+    ##########################################################################
+    "dall-e-3", # ImageGeneration
+    "gpt-image-1", # ImageGeneration, ImageEdit
+    "gpt-image-1-mini", # ImageGeneration, ImageEdit
+    "gpt-image-1.5", # ImageGeneration, ImageEdit
+    ##########################################################################
+    # Video Generation Models
+    ##########################################################################
+    "sora-20250502", # Videos
+    "sora-2-20251006", # Videos
+]
+
+###########################################################################
+# ⚠️ Deprecated Models
+##########################################################################
+# gpt-35-turbo-20220309: deprecated, redirected to gpt-4.1-mini-20250414
+# gpt-35-turbo-16k-20230613: deprecated, redirected to gpt-4.1-mini-20250414
+# gpt-35-turbo-20230613: deprecated, redirected to gpt-4.1-mini-20250414
+# gpt-4-1106-preview: deprecated, redirected to gpt-4o-20241120
+# gpt-4-0125-preview: deprecated, redirected to gpt-4o-20241120
+# gpt-4-20230321: deprecated, redirected to gpt-4o-20241120
+# gpt-4-20230613: deprecated, redirected to gpt-4o-20241120
+# gpt-4-32k-20230321: deprecated, redirected to gpt-4o-20241120
+# gpt-4-32k-20230613: deprecated, redirected to gpt-4o-20241120
+# gpt-4-visual-preview: deprecated, redirected to gpt-4o-20241120
+# gpt-4o-audio-preview-20241217: deprecated
+# gpt-4.5-preview-20250227: deprecated
+# deepseek-r1-preview: deprecated, redirected to DeepSeek-R1
+# gpt-5-chat-20250807: deprecated
+# gpt-4o-realtime-preview-20241001: deprecated, realtime models preview support has been removed
+# gpt-35-turbo-1106: deprecated
+# gpt-35-turbo-0125: deprecated
+# gpt-4-turbo-20240409: deprecated
+# o1-mini-20240912: deprecated, redirected to o4-mini-20250416
+
 from typing import (
     Any,
-    AsyncGenerator,
     Callable,
     Coroutine,
     Literal,
@@ -11,9 +120,9 @@ from typing import (
     cast,
     Dict,
     TYPE_CHECKING,
+    overload,
 )
 import sys, os
-import contextlib
 import functools
 
 __all__ = [
@@ -51,7 +160,7 @@ _depParam = ParamSpec("_depParam")
 
 def _deprecated(message: str):
     def deprecated_decorator(
-        func: Callable[_depParam, _depRt]
+        func: Callable[_depParam, _depRt],
     ) -> Callable[_depParam, _depRt]:
         def deprecated_func(
             *args: _depParam.args, **kwargs: _depParam.kwargs
@@ -337,86 +446,6 @@ def get_openai_token(
     )()
 
 
-"""
-Available models for CloudGPT OpenAI
-"""
-cloudgpt_available_models = Literal[
-    # deprecated models
-    "gpt-35-turbo-20220309", # ⚠️deprecated, redirected to gpt-35-turbo-0125
-    "gpt-35-turbo-16k-20230613", # ⚠️deprecated, redirected to gpt-35-turbo-0125
-    "gpt-35-turbo-20230613", # ⚠️deprecated, redirected to gpt-35-turbo-0125
-    "gpt-4-1106-preview", # ⚠️deprecated, redirected to gpt-4o-20241120
-    "gpt-4-0125-preview", # ⚠️deprecated, redirected to gpt-4o-20241120
-    "gpt-4-20230321", # ⚠️deprecated, redirected to gpt-4o-20241120
-    "gpt-4-20230613", # ⚠️deprecated, redirected to gpt-4o-20241120
-    "gpt-4-32k-20230321", # ⚠️deprecated, redirected to gpt-4o-20241120
-    "gpt-4-32k-20230613", # ⚠️deprecated, redirected to gpt-4o-20241120
-    "gpt-4-visual-preview", # ⚠️deprecated, redirected to gpt-4o-20241120
-    "gpt-4o-audio-preview-20241217", # ⚠️deprecated
-    "gpt-4.5-preview-20250227", # ⚠️deprecated
-    "deepseek-r1-preview", # ⚠️deprecated, redirected/renamed to DeepSeek-R1
-    "gpt-5-chat-20250807", # ⚠️deprecated
-    
-    ##########################################################################
-    # OpenAI Models
-    ##########################################################################
-    # Current OpenAI models
-    "gpt-35-turbo-1106",
-    "gpt-35-turbo-0125",
-    "gpt-4-turbo-20240409",
-    "gpt-4o-20240513", # supports Responses API
-    "gpt-4o-20240806", # supports Responses API
-    "gpt-4o-20241120", # supports Responses API
-    "gpt-4o-mini-20240718", # supports Responses API
-    "gpt-4.1-20250414", # supports Responses API
-    "gpt-4.1-mini-20250414", # supports Responses API
-    "gpt-4.1-nano-20250414", # supports Responses API
-    "gpt-5-20250807", # supports Responses API
-    "gpt-5-mini-20250807", # supports Responses API
-    "gpt-5-nano-20250807", # supports Responses API
-    "gpt-5-chat-20251003", # supports Responses API
-    "gpt-5-pro-20251006", # supports Responses API
-    
-    # Preview models
-    "computer-use-preview-20250311", # supports Responses API
-    
-    # Reasoning models
-    "o1-mini-20240912",
-    "o1-20241217",
-    "o3-mini-20250131",
-    "o3-20250416",  # supports Responses API
-    "o3-pro-20250610", # supports Responses API only
-    "o3-deep-research-20250626", # supports Responses API only
-    "o4-mini-20250416", # supports Responses API
-    "codex-mini-20250516",  # supports Responses API only
-    "gpt-5-codex-20250915", # supports Responses API only
-    
-    # Open source reasoning models
-    "gpt-oss-20b",
-    "gpt-oss-120b",
-
-    ##########################################################################
-    # xAI Models
-    ##########################################################################
-    "grok-3",
-    "grok-3-mini",
-    "grok-4",
-    "grok-4-fast-reasoning",
-    "grok-4-fast-non-reasoning",
-    "grok-code-fast-1",
-
-    ##########################################################################
-    # DeepSeek Models
-    ##########################################################################
-    "DeepSeek-V3-0324",
-    "DeepSeek-R1",
-    "DeepSeek-R1-0528",
-    "DeepSeek-V3.1",
-]
-
-cloudgpt_available_realtime_models = Literal["gpt-4o-realtime-preview-20241001"]
-
-
 def encode_image(image_path: str, mime_type: Optional[str] = None) -> str:
     """
     Utility function to encode image to base64 for using in OpenAI API
@@ -463,7 +492,8 @@ def get_openai_client(
     use_broker_login: Optional[bool] = None,
     use_managed_identity: Optional[bool] = None,
     use_device_code: Optional[bool] = None,
-    v1_api: bool = False,
+    v1_api: Optional[bool] = None,
+    default_headers: Optional[Dict[str, str]] = None,
 ) -> OpenAI:
     """
     Initialize OpenAI client for CloudGPT OpenAI.
@@ -516,6 +546,7 @@ def get_openai_client(
         api_version=api_version,
         base_url=base_url,
         azure_ad_token_provider=token_provider,
+        default_headers=default_headers,
     )
     return client
 
@@ -528,7 +559,8 @@ async def async_get_openai_client(
     use_broker_login: Optional[bool] = None,
     use_managed_identity: Optional[bool] = None,
     use_device_code: Optional[bool] = None,
-    v1_api: bool = False,
+    v1_api: Optional[bool] = None,
+    default_headers: Optional[Dict[str, str]] = None,
 ) -> openai.AsyncOpenAI:
     token_provider = await async_get_openai_token_provider(
         client_id=client_id,
@@ -547,22 +579,63 @@ async def async_get_openai_client(
         base_url = "https://cloudgpt-openai.azure-api.net/openai/"
     client = openai.AsyncAzureOpenAI(
         api_version=api_version,
-        azure_endpoint=base_url,
+        base_url=base_url,
         azure_ad_token_provider=token_provider,
+        default_headers=default_headers,
     )
     return client
 
 
+if TYPE_CHECKING:
+    from openai.types.chat.chat_completion_message_param import (
+        ChatCompletionMessageParam,
+    )
+    from openai.types.chat.chat_completion import ChatCompletion
+    from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
+    from typing import Iterable
+
+
+@overload
 def get_chat_completion(
-    model: Optional[cloudgpt_available_models] = None,
+    messages: "Iterable[ChatCompletionMessageParam]",
+    model: cloudgpt_available_models,
+    stream: "Literal[False]" = False,
     client_id: Optional[str] = None,
     client_secret: Optional[str] = None,
     use_azure_cli: Optional[bool] = None,
     use_broker_login: Optional[bool] = None,
     use_managed_identity: Optional[bool] = None,
     use_device_code: Optional[bool] = None,
+    v1_api: Optional[bool] = None,
     **kwargs: Any,
-):
+) -> "ChatCompletion": ...
+@overload
+def get_chat_completion(
+    messages: "Iterable[ChatCompletionMessageParam]",
+    model: cloudgpt_available_models,
+    stream: Literal[True],
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None,
+    use_azure_cli: Optional[bool] = None,
+    use_broker_login: Optional[bool] = None,
+    use_managed_identity: Optional[bool] = None,
+    use_device_code: Optional[bool] = None,
+    v1_api: Optional[bool] = None,
+    **kwargs: Any,
+) -> "openai.Stream[ChatCompletionChunk]": ...
+def get_chat_completion(
+    messages: "Iterable[ChatCompletionMessageParam]",
+    model: Optional[cloudgpt_available_models] = None,
+    stream: bool = False,
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None,
+    use_azure_cli: Optional[bool] = None,
+    use_broker_login: Optional[bool] = None,
+    use_managed_identity: Optional[bool] = None,
+    use_device_code: Optional[bool] = None,
+    v1_api: Optional[bool] = None,
+    **kwargs: Any,
+) -> "ChatCompletion | openai.Stream[ChatCompletionChunk]":
     """
     Helper function to get chat completion from OpenAI API
     """
@@ -585,24 +658,57 @@ def get_chat_completion(
         use_broker_login=use_broker_login,
         use_managed_identity=use_managed_identity,
         use_device_code=use_device_code,
-        v1_api=False,
+        v1_api=v1_api,
     )
 
-    response: Any = client.chat.completions.create(model=model_name, **kwargs)
+    response = client.chat.completions.create(
+        messages=messages, model=model_name, stream=stream, **kwargs
+    )
 
     return response
 
 
+@overload
 async def async_get_chat_completion(
-    model: Optional[cloudgpt_available_models] = None,
+    messages: "Iterable[ChatCompletionMessageParam]",
+    model: cloudgpt_available_models,
+    stream: "Literal[False]" = False,
     client_id: Optional[str] = None,
     client_secret: Optional[str] = None,
     use_azure_cli: Optional[bool] = None,
     use_broker_login: Optional[bool] = None,
     use_managed_identity: Optional[bool] = None,
     use_device_code: Optional[bool] = None,
+    v1_api: Optional[bool] = None,
     **kwargs: Any,
-):
+) -> "ChatCompletion": ...
+@overload
+async def async_get_chat_completion(
+    messages: "Iterable[ChatCompletionMessageParam]",
+    model: cloudgpt_available_models,
+    stream: "Literal[True]",
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None,
+    use_azure_cli: Optional[bool] = None,
+    use_broker_login: Optional[bool] = None,
+    use_managed_identity: Optional[bool] = None,
+    use_device_code: Optional[bool] = None,
+    v1_api: Optional[bool] = None,
+    **kwargs: Any,
+) -> "openai.AsyncStream[ChatCompletionChunk]": ...
+async def async_get_chat_completion(
+    messages: Iterable[ChatCompletionMessageParam],
+    model: Optional[cloudgpt_available_models] = None,
+    stream: bool = False,
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None,
+    use_azure_cli: Optional[bool] = None,
+    use_broker_login: Optional[bool] = None,
+    use_managed_identity: Optional[bool] = None,
+    use_device_code: Optional[bool] = None,
+    v1_api: Optional[bool] = None,
+    **kwargs: Any,
+) -> "ChatCompletion | openai.AsyncStream[ChatCompletionChunk]":
     """
     Helper function to get chat completion from OpenAI API with async API
     """
@@ -625,113 +731,15 @@ async def async_get_chat_completion(
         use_broker_login=use_broker_login,
         use_managed_identity=use_managed_identity,
         use_device_code=use_device_code,
-        v1_api=False,
+        v1_api=v1_api,
     )
 
-    response: Any = await client.chat.completions.create(model=model_name, **kwargs)
+    response = await client.chat.completions.create(
+        messages=messages, model=model_name, stream=stream, **kwargs
+    )
 
     return response
 
-
-def _check_rtclient():
-    try:
-        import rtclient  # type: ignore
-
-        del rtclient
-    except ImportError:
-        raise ImportError(
-            f"rtclient package is required when using realtime API`. Please install it by running \n"
-            "pip install https://github.com/Azure-Samples/aoai-realtime-audio-sdk/releases/download/py%2Fv0.5.1/rtclient-0.5.1-py3-none-any.whl"
-        )
-    return True
-
-
-if TYPE_CHECKING:
-    from rtclient import RTClient, RTLowLevelClient
-
-
-async def get_realtime_low_level_client(
-    model: cloudgpt_available_realtime_models = "gpt-4o-realtime-preview-20241001",
-    **kwargs: Any,
-) -> RTLowLevelClient:
-    """
-    Get realtime client with low level API for fined grained control
-
-    Usage:
-    ```python
-    async with await get_realtime_low_level_client() as client:
-        # use client
-        pass
-    ```
-    """
-    assert _check_rtclient()
-    from rtclient import RTLowLevelClient
-
-    class CloudGPT_AOAI_RTLowLevelClient(RTLowLevelClient):
-        def __init__(
-            self,
-            token_provider: AsyncTokenProvider,
-            url: str = "https://cloudgpt-openai.azure-api.net/",
-            azure_deployment: cloudgpt_available_realtime_models | None = None,
-        ):
-            self._async_token_provider = token_provider
-
-            from azure.core.credentials import AzureKeyCredential
-
-            key_credential = AzureKeyCredential("placeholder")
-
-            super().__init__(
-                url=url,
-                key_credential=key_credential,
-                azure_deployment=azure_deployment,
-            )
-
-        async def _get_auth(self) -> Dict[str, str]:
-            token = await self._async_token_provider()
-            return {"Authorization": f"Bearer {token}"}
-
-    token_provider = await async_get_openai_token_provider(**kwargs)
-    return CloudGPT_AOAI_RTLowLevelClient(
-        token_provider=token_provider,
-        azure_deployment=model,
-    )
-
-
-async def get_realtime_client(
-    model: cloudgpt_available_realtime_models = "gpt-4o-realtime-preview-20241001",
-    **kwargs: Any,
-) -> RTClient:
-    """
-    Get realtime client with high level API for simplified usage
-
-    Usage:
-    ```python
-    async with await get_realtime_client() as client:
-        # use client
-        pass
-    ```
-    """
-    assert _check_rtclient()
-    from rtclient import RTClient, MessageQueueWithError, Session
-
-    class CloudGPT_AOAI_RTClient(RTClient):
-        def __init__(
-            self,
-            low_level_client: Optional[RTLowLevelClient] = None,
-        ):
-            self._client = low_level_client
-
-            self._message_queue = MessageQueueWithError(
-                receive_delegate=self._receive_message,
-                error_predicate=lambda m: m is not None and (m.type == "error"),
-            )
-
-            self.session: Optional[Session] = None
-
-            self._response_map: dict[str, str] = {}
-
-    low_level_client = await get_realtime_low_level_client(model=model, **kwargs)
-    return CloudGPT_AOAI_RTClient(low_level_client=low_level_client)
 
 
 def _test_call(**kwargs: Any):

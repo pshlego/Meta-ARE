@@ -19,13 +19,20 @@ from typing import Dict, Any, Optional, List, Tuple
 
 from are.simulation.agents.agent_builder import AgentBuilder
 from are.simulation.agents.agent_config_builder import AgentConfigBuilder
-from are.simulation.agents.agent_log import BaseAgentLog
+from are.simulation.agents.agent_log import BaseAgentLog, ToolCallLog, ObservationLog
 from are.simulation.agents.are_simulation_agent import RunnableARESimulationAgent
+from are.simulation.agents.default_agent.are_simulation_main import ARESimulationAgent
 from are.simulation.agents.are_simulation_agent_config import (
     LLMEngineConfig,
     MainAgentConfig,
     RunnableARESimulationAgentConfig,
 )
+from are.simulation.agents.default_agent.tools.action_executor import ParsedAction
+from are.simulation.agents.default_agent.tools.json_action_executor import (
+    JsonActionExecutor,
+    get_observation_log,
+)
+from are.simulation.agents.llm.types import MMObservation
 from are.simulation.data_handler.exporter import JsonScenarioExporter
 from are.simulation.environment import Environment, EnvironmentConfig
 from are.simulation.notification_system import VerboseNotificationSystem
@@ -596,6 +603,7 @@ class CheckpointReplayRunner:
                     env=env,
                     config=config,
                     initial_agent_logs=initial_agent_logs,
+                    checkpoint_type=metadata.checkpoint_type,
                 )
         except Exception as exception:
             self.logger.exception(f"Failed to continue execution: {exception}")
@@ -632,6 +640,7 @@ class CheckpointReplayRunner:
         env: Environment,
         config: ScenarioRunnerConfig,
         initial_agent_logs: List[BaseAgentLog],
+        checkpoint_type: str = "after_tool_call",
     ) -> ScenarioValidationResult:
         """
         Continue running with agent from checkpoint state.
@@ -641,6 +650,7 @@ class CheckpointReplayRunner:
             env: Restored environment
             config: Runner configuration
             initial_agent_logs: Reconstructed agent logs from checkpoint
+            checkpoint_type: Type of checkpoint being replayed ("before_tool_call" or "after_tool_call")
             
         Returns:
             Validation result
@@ -685,12 +695,28 @@ class CheckpointReplayRunner:
         self.logger.info(f"Continuing with Agent {config.agent} from checkpoint")
         self.logger.info(f"Replaying {len(initial_agent_logs)} agent logs before continuing")
         
-        # Run scenario with initial logs - this will replay the logs and continue
-        result = are_simulation_agent.run_scenario(
-            scenario=scenario,
-            notification_system=env.notification_system,
-            initial_agent_logs=initial_agent_logs,
-        )
+        if checkpoint_type == "before_tool_call":
+            # Special handling: the checkpoint was taken before the tool executed.
+            # We need to execute the pending tool call before starting new iterations.
+            if not isinstance(are_simulation_agent, ARESimulationAgent):
+                raise CheckpointReplayError(
+                    "Replay from before_tool_call requires ARESimulationAgent, "
+                    f"got {type(are_simulation_agent).__name__}"
+                )
+            result = self._run_from_before_tool_call(
+                are_simulation_agent=are_simulation_agent,
+                scenario=scenario,
+                env=env,
+                initial_agent_logs=initial_agent_logs,
+            )
+        else:
+            # Normal replay: checkpoint was taken after tool call completed.
+            # The agent logs include the observation, so we can resume normally.
+            result = are_simulation_agent.run_scenario(
+                scenario=scenario,
+                notification_system=env.notification_system,
+                initial_agent_logs=initial_agent_logs,
+            )
         
         output = result.output
         self.logger.info(f"Agent Output: {output}")
@@ -700,6 +726,151 @@ class CheckpointReplayRunner:
         self.logger.info(f"Validation {validation_result} EnvState={env.state}")
         
         return validation_result
+    
+    def _run_from_before_tool_call(
+        self,
+        are_simulation_agent: ARESimulationAgent,
+        scenario: Scenario,
+        env: Environment,
+        initial_agent_logs: List[BaseAgentLog],
+    ):
+        """
+        Handle replay from a before_tool_call checkpoint.
+        
+        When replaying from before_tool_call, the agent logs end with a ToolCallLog
+        but the tool hasn't been executed yet. This method:
+        1. Sets up the agent (tools, system prompt, replays logs)
+        2. Executes the pending tool call
+        3. Continues with the normal agent loop
+        
+        Args:
+            are_simulation_agent: The agent to run
+            scenario: Scenario being replayed
+            env: Restored environment
+            initial_agent_logs: Agent logs from checkpoint (ending with ToolCallLog)
+            
+        Returns:
+            AgentExecutionResult
+        """
+        from are.simulation.agents.agent_execution_result import AgentExecutionResult
+        
+        # Step 1: Prepare the agent (same as run_scenario does internally)
+        are_simulation_agent.prepare_are_simulation_run(
+            scenario=scenario,
+            notification_system=env.notification_system,
+            initial_agent_logs=initial_agent_logs,
+        )
+        
+        # Step 2: Execute the pending tool call
+        self._execute_pending_tool_call(are_simulation_agent, env)
+        
+        # Step 3: Continue with agent loop
+        # initial_agent_logs being truthy tells agent_loop to call execute_agent_loop()
+        # to finish the current turn before entering the normal turn loop.
+        max_turns = are_simulation_agent.max_turns
+        if scenario.nb_turns is not None:
+            max_turns = scenario.nb_turns
+        
+        result = are_simulation_agent.agent_loop(
+            max_turns=max_turns,
+            initial_agent_logs=initial_agent_logs,
+        )
+        
+        return AgentExecutionResult(output=result)
+    
+    def _execute_pending_tool_call(
+        self,
+        are_simulation_agent: ARESimulationAgent,
+        env: Environment,
+    ) -> None:
+        """
+        Execute the pending tool call from a before_tool_call checkpoint.
+        
+        The agent logs contain a ToolCallLog at the end (the agent decided to call
+        a tool but it hasn't executed yet). This method:
+        1. Extracts the ToolCallLog from the agent's replayed logs
+        2. Builds a ParsedAction from it
+        3. Executes the tool call via the action executor
+        4. Appends the ObservationLog (which triggers the after_tool_call checkpoint)
+        
+        Args:
+            are_simulation_agent: Agent with replayed logs
+            env: Environment (may be CheckpointableEnvironment)
+        """
+        react_agent = are_simulation_agent.react_agent
+        
+        # Find the last ToolCallLog in the agent's logs
+        pending_tool_call = None
+        for log in reversed(react_agent.logs):
+            if isinstance(log, ToolCallLog):
+                pending_tool_call = log
+                break
+        
+        if pending_tool_call is None:
+            self.logger.warning(
+                "No pending ToolCallLog found in agent logs for before_tool_call replay"
+            )
+            return
+        
+        tool_name = pending_tool_call.tool_name
+        arguments = pending_tool_call.tool_arguments
+        
+        self.logger.info(f"Executing pending tool call from checkpoint: {tool_name}")
+        
+        # Set _before_checkpoint_created flag so the after_tool_call checkpoint
+        # uses the same event sequence number as the before_tool_call
+        if isinstance(env, CheckpointableEnvironment):
+            env._before_checkpoint_created = True
+        
+        # Ensure tools are available in the action executor
+        react_agent.init_tools()
+        
+        # Build ParsedAction from the ToolCallLog
+        app_name, action_name = (
+            tool_name.split("__") if "__" in tool_name
+            else (tool_name, None)
+        )
+        
+        parsed_action = ParsedAction(
+            tool_name=tool_name,
+            app_name=app_name,
+            arguments=arguments if arguments else {},
+            action_name=action_name,
+        )
+        
+        # Execute the tool call (this runs through the environment, creating the AGENT event)
+        self.logger.info(f"Calling tool: '{tool_name}' with arguments: {arguments}")
+        action_executor = react_agent.action_executor
+        if not isinstance(action_executor, JsonActionExecutor):
+            raise CheckpointReplayError(
+                "Replay from before_tool_call requires JsonActionExecutor, "
+                f"got {type(action_executor).__name__}"
+            )
+        observation = action_executor.execute_tool_call(
+            parsed_action, react_agent.append_agent_log, react_agent.make_timestamp
+        )
+        
+        # Append the observation log via append_agent_log
+        # This triggers the log_callback → checkpoint callback → after_tool_call checkpoint
+        if isinstance(observation, MMObservation):
+            react_agent.append_agent_log(
+                get_observation_log(
+                    react_agent.make_timestamp(),
+                    observation.content,
+                    react_agent.agent_id,
+                    observation.attachments,
+                )
+            )
+        else:
+            react_agent.append_agent_log(
+                get_observation_log(
+                    react_agent.make_timestamp(),
+                    str(observation),
+                    react_agent.agent_id,
+                )
+            )
+        
+        self.logger.info(f"Pending tool call executed successfully: {tool_name}")
     
     def _export_trace(
         self,

@@ -19,9 +19,10 @@ class CheckpointConfig:
     This class encapsulates core checkpoint settings to avoid
     contaminating existing ARE configuration classes.
     
-    Note: The current implementation only captures checkpoints after agent tool calls
-    (AGENT events via add_to_log). The checkpoint_on_events field is retained for
-    future extensibility but currently only AGENT is used.
+    Note: The current implementation captures checkpoints around agent tool calls.
+    Two checkpoint types are supported:
+    - "before_tool_call": Captured when the agent decides to call a tool (ToolCallLog)
+    - "after_tool_call": Captured after the tool result is received (ObservationLog)
     """
     
     # Basic checkpoint settings
@@ -30,6 +31,10 @@ class CheckpointConfig:
     
     # Event-based checkpoint configuration (currently only AGENT is used)
     checkpoint_on_events: Optional[Set[str]] = None  # Only "AGENT" is currently active
+    
+    # Which checkpoint types to create around tool calls
+    # Supported: "before_tool_call", "after_tool_call"
+    checkpoint_types: Optional[Set[str]] = None
     
     # Debug settings
     verbose_logging: bool = False
@@ -43,6 +48,10 @@ class CheckpointConfig:
         # Set default to AGENT only (tool calls after each agent iteration)
         if self.checkpoint_on_events is None:
             self.checkpoint_on_events = {"AGENT"}
+        
+        # Default: both before and after tool call checkpoints
+        if self.checkpoint_types is None:
+            self.checkpoint_types = {"before_tool_call", "after_tool_call"}
         
         # Ensure checkpoint directory exists
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -61,23 +70,36 @@ class CheckpointConfig:
         """Get the checkpoint directory path for a specific scenario."""
         return self.checkpoint_dir / scenario_id
     
+    def should_create_checkpoint_type(self, checkpoint_type: str) -> bool:
+        """Check if this checkpoint type should be created."""
+        if not self.enabled:
+            return False
+        if self.checkpoint_types is None:
+            return False
+        return checkpoint_type in self.checkpoint_types
+    
     def to_dict(self) -> dict:
         """Convert configuration to dictionary for serialization."""
         return {
             'enabled': self.enabled,
             'checkpoint_dir': str(self.checkpoint_dir),
             'checkpoint_on_events': list(self.checkpoint_on_events) if self.checkpoint_on_events else [],
+            'checkpoint_types': sorted(list(self.checkpoint_types)) if self.checkpoint_types else [],
             'verbose_logging': self.verbose_logging,
         }
     
     @classmethod
     def from_dict(cls, data: dict) -> 'CheckpointConfig':
         """Create configuration from dictionary."""
+        data_copy = data.copy()
         # Convert event list back to set
-        if 'checkpoint_on_events' in data:
-            data['checkpoint_on_events'] = set(data['checkpoint_on_events'])
+        if 'checkpoint_on_events' in data_copy:
+            data_copy['checkpoint_on_events'] = set(data_copy['checkpoint_on_events'])
+        # Convert checkpoint_types list back to set
+        if 'checkpoint_types' in data_copy:
+            data_copy['checkpoint_types'] = set(data_copy['checkpoint_types'])
         
-        return cls(**data)
+        return cls(**data_copy)
     
     @classmethod
     def create_default(cls, checkpoint_dir: str = "./checkpoints") -> 'CheckpointConfig':

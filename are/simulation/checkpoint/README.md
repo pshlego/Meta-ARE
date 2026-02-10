@@ -20,7 +20,7 @@ A comprehensive system for capturing and replaying system state during ARE scena
 
 ## Overview
 
-The checkpoint system captures complete system state after each agent tool call, enabling:
+The checkpoint system captures complete system state around each agent tool call, enabling:
 
 - **Debugging**: Inspect state at any point in execution
 - **Analysis**: Study agent behavior and decision-making
@@ -30,8 +30,9 @@ The checkpoint system captures complete system state after each agent tool call,
 ### Key Features
 
 - **Minimal Invasive Design**: All logic contained within `checkpoint/` package
-- **Automatic Capture**: Checkpoints created after each agent tool call
+- **Automatic Capture**: Checkpoints created before and after each agent tool call
 - **Complete State**: Captures environment, agent logs, and app states
+- **Configurable Types**: Enable/disable before_tool_call and after_tool_call independently
 - **Replay Support**: Continue execution from any checkpoint
 - **CLI Integration**: Easy-to-use command-line interface
 
@@ -74,7 +75,7 @@ runner = CheckpointableScenarioRunner(
 )
 
 # Run - checkpoints created automatically after each agent tool call
-result = runner.run(scenario_config, scenario)
+result = runner.run(config, scenario)
 ```
 
 ### Replay from Checkpoint
@@ -86,8 +87,12 @@ are-checkpoint list test_results/checkpoints
 # View checkpoint details
 are-checkpoint info test_results/checkpoints/event_1_after_tool_call
 
-# Replay from checkpoint (uses saved config from scenario_meta.json)
+# Replay from after_tool_call checkpoint (uses saved config from scenario_meta.json)
 are-checkpoint replay test_results/checkpoints/event_1_after_tool_call
+
+# Replay from before_tool_call checkpoint
+# The pending tool call is executed first, then the agent continues normally
+are-checkpoint replay test_results/checkpoints/event_1_before_tool_call
 ```
 
 ---
@@ -119,8 +124,8 @@ checkpoint/
 | `storage.py` | File I/O | `CheckpointStorage`, `CheckpointJSONEncoder` |
 | `manager.py` | Coordination | `CheckpointManager` |
 | `agent_state.py` | Agent state capture | `capture_agent_state()` |
-| `wrappers.py` | Integration wrappers | `CheckpointableEnvironment`, `CheckpointableScenarioRunner` |
-| `replay.py` | Checkpoint replay | `CheckpointReplayRunner`, `ScenarioMetaLoader` |
+| `wrappers.py` | Integration wrappers | `CheckpointableEnvironment`, `CheckpointableScenarioRunner`, `create_checkpointable_runner()`, `create_checkpointable_environment()` |
+| `replay.py` | Checkpoint replay | `CheckpointReplayRunner`, `CheckpointLoader`, `ScenarioMetaLoader`, `CheckpointReplayError` |
 | `cli.py` | CLI commands | `list`, `info`, `replay` |
 
 ---
@@ -129,26 +134,45 @@ checkpoint/
 
 ### When Checkpoints Are Created
 
-Checkpoints are created **after each agent tool call completes** (after the `ObservationLog` is added to agent logs). This ensures that:
+Two checkpoints are created around each agent tool call:
 
-1. The tool call has fully executed
-2. The observation (tool result) is included in the checkpoint
-3. The agent has complete context for replay
+1. **before_tool_call**: Created when `ToolCallLog` is added to agent logs (before the tool executes). Captures the agent's decision — which tool to call and with what arguments.
+
+2. **after_tool_call**: Created when `ObservationLog` is added to agent logs (after the tool completes). Captures the complete state including the tool result.
+
+Both checkpoint types for the same tool call share the same event sequence number (e.g., `event_1_before_tool_call` and `event_1_after_tool_call`).
 
 ### Checkpoint Flow
 
 ```
 1. Agent decides to call a tool
-2. ToolCallLog added to agent logs
+2. ToolCallLog added to agent logs     <- BEFORE_TOOL_CALL CHECKPOINT
 3. Tool executes
 4. AGENT event added to environment log (env.add_to_log)
-5. ObservationLog added to agent logs <- CHECKPOINT CREATED HERE
+5. ObservationLog added to agent logs   <- AFTER_TOOL_CALL CHECKPOINT
 6. Agent processes observation and continues
+```
+
+### Configuration
+
+By default, both checkpoint types are enabled. You can control which types are created:
+
+```python
+# Both (default)
+config = CheckpointConfig(enabled=True, checkpoint_types={"before_tool_call", "after_tool_call"})
+
+# Only before tool call
+config = CheckpointConfig(enabled=True, checkpoint_types={"before_tool_call"})
+
+# Only after tool call (legacy behavior)
+config = CheckpointConfig(enabled=True, checkpoint_types={"after_tool_call"})
 ```
 
 ### Implementation Details
 
-The checkpoint is triggered via `setup_agent_checkpoint_callback()` which hooks into the agent's `log_callback`. When an `ObservationLog` is added, the checkpoint is created with the complete state including the tool result.
+Both checkpoints are triggered via `setup_agent_checkpoint_callback()` which hooks into the agent's `log_callback`:
+- When a `ToolCallLog` is added, a `before_tool_call` checkpoint is created
+- When an `ObservationLog` is added, an `after_tool_call` checkpoint is created
 
 ---
 
@@ -166,12 +190,22 @@ config = CheckpointConfig(
     enabled=True,                              # Master switch
     checkpoint_dir=Path("./checkpoints"),      # Storage directory
     checkpoint_on_events={"AGENT"},            # Event types to checkpoint
+    checkpoint_types={"before_tool_call", "after_tool_call"},  # Checkpoint types
     verbose_logging=False                      # Detailed logging
 )
 
-# Convenience factory
-config = CheckpointConfig.create_default(checkpoint_dir=Path("./checkpoints"))
+# Convenience factory (note: sets verbose_logging=True by default)
+config = CheckpointConfig.create_default(checkpoint_dir="./checkpoints")
+
+# Minimal testing configuration
+config = CheckpointConfig.create_minimal_testing(checkpoint_dir="./test_checkpoints")
 ```
+
+Additional methods:
+- `should_checkpoint_event(event_type)` — check if an event type should trigger a checkpoint
+- `should_create_checkpoint_type(checkpoint_type)` — check if a checkpoint type is enabled
+- `get_checkpoint_path(scenario_id)` — get checkpoint directory for a scenario
+- `to_dict()` / `from_dict(data)` — serialization support
 
 ### CheckpointManager
 
@@ -216,7 +250,7 @@ ScenarioRunner with integrated checkpointing.
 ```python
 from are.simulation.checkpoint import CheckpointConfig, CheckpointableScenarioRunner
 
-config = CheckpointConfig.create_default(checkpoint_dir=Path("./checkpoints"))
+config = CheckpointConfig.create_default(checkpoint_dir="./checkpoints")
 
 runner = CheckpointableScenarioRunner(
     checkpoint_config=config,
@@ -224,7 +258,9 @@ runner = CheckpointableScenarioRunner(
 )
 
 # Run with automatic checkpointing
-result = runner.run(scenario_config, scenario)
+result = runner.run(config, scenario)
+# config: ScenarioRunnerConfig, scenario: Scenario
+# Optional: completed_events parameter for pre-loaded events
 ```
 
 ### CheckpointReplayRunner
@@ -265,6 +301,41 @@ if loader.has_scenario_meta():
     init_params = loader.get_scenario_initialization_params()
 ```
 
+### CheckpointLoader
+
+Load and validate checkpoint data from storage.
+
+```python
+from are.simulation.checkpoint import CheckpointLoader
+from pathlib import Path
+
+loader = CheckpointLoader(Path("./checkpoints"), verbose=True)
+
+# List available checkpoints
+checkpoint_ids = loader.list_checkpoints()
+
+# Load checkpoint data
+checkpoint_data = loader.load_checkpoint("event_1_after_tool_call")
+
+# Get checkpoint metadata
+metadata = loader.get_checkpoint_metadata("event_1_after_tool_call")
+```
+
+### Factory Functions
+
+```python
+from are.simulation.checkpoint import (
+    create_checkpointable_runner,
+    create_checkpointable_environment,
+)
+
+# Create a CheckpointableScenarioRunner from config
+runner = create_checkpointable_runner(checkpoint_config=config, ...)
+
+# Create a CheckpointableEnvironment from config
+env = create_checkpointable_environment(checkpoint_config=config, ...)
+```
+
 ### Convenience Functions
 
 ```python
@@ -272,7 +343,8 @@ from are.simulation.checkpoint import (
     capture_agent_state,
     list_checkpoints,
     get_checkpoint_info,
-    replay_from_checkpoint
+    replay_from_checkpoint,
+    CheckpointReplayError,
 )
 
 # Capture agent state
@@ -284,11 +356,12 @@ checkpoints = list_checkpoints("./checkpoints")
 # Get checkpoint details
 info = get_checkpoint_info("./checkpoints/event_1_after_tool_call")
 
-# Quick replay
+# Quick replay (config loaded from scenario_meta.json if not provided)
 result, output_dir = replay_from_checkpoint(
     checkpoint_path="./checkpoints/event_1_after_tool_call",
     scenario=scenario,
-    verbose=True
+    config=None,       # optional ScenarioRunnerConfig override
+    verbose=True,
 )
 ```
 
@@ -383,8 +456,12 @@ are-checkpoint replay <checkpoint_path> [OPTIONS]
 **Examples:**
 
 ```bash
-# Replay using saved config
+# Replay from after_tool_call checkpoint (normal)
 are-checkpoint replay test_results/checkpoints/event_1_after_tool_call
+
+# Replay from before_tool_call checkpoint
+# Executes the pending tool call first, then continues the agent loop
+are-checkpoint replay test_results/checkpoints/event_1_before_tool_call
 
 # Replay with different model
 are-checkpoint replay test_results/checkpoints/event_1_after_tool_call -m gpt-4
@@ -405,10 +482,26 @@ are-checkpoint replay test_results/checkpoints/event_1_after_tool_call -o ./repl
 ```
 checkpoints/
 ├── scenario_meta.json                    # Scenario configuration
-├── event_1_after_tool_call/             # First checkpoint
-│   └── checkpoint.json                   # Complete checkpoint data
-├── event_2_after_tool_call/             # Second checkpoint
-│   └── checkpoint.json
+├── event_1_before_tool_call/            # Before first tool call
+│   ├── metadata.json
+│   ├── trigger_event.json
+│   ├── environment_snapshot.json
+│   ├── agent_snapshot.json
+│   └── apps_snapshot/
+│       ├── AgentUserInterface_state.json
+│       ├── SandboxLocalFileSystem_state.json
+│       └── _protocol_mappings_state.json
+├── event_1_after_tool_call/             # After first tool call
+│   ├── metadata.json
+│   ├── trigger_event.json
+│   ├── environment_snapshot.json
+│   ├── agent_snapshot.json
+│   └── apps_snapshot/
+│       └── ...
+├── event_2_before_tool_call/            # Before second tool call
+│   └── ...
+├── event_2_after_tool_call/             # After second tool call
+│   └── ...
 └── ...
 ```
 
@@ -435,53 +528,41 @@ Saved with the first checkpoint, contains configuration for auto-replay:
 }
 ```
 
-### checkpoint.json
+### Checkpoint Files
 
+Each checkpoint is stored as separate JSON files within its directory:
+
+**metadata.json**
 ```json
 {
-  "metadata": {
-    "checkpoint_id": "event_1_after_tool_call",
-    "scenario_id": "scenario_find_image_file",
-    "simulation_time": 123.456,
-    "wall_clock_time": 1705321425.123,
-    "created_at": "2024-01-15 10:23:45",
-    "checkpoint_type": "after_tool_call",
-    "trigger_event_id": "AGENT-123",
-    "trigger_event_type": "AGENT",
-    "event_sequence_number": 1,
-    "checkpoint_sequence": 1
-  },
-  "trigger_event": {
-    "event_type": "AGENT",
-    "event_id": "AGENT-123",
-    "function_name": "run",
-    "app_name": "BashTool"
-  },
-  "environment": {
-    "current_time": 123.456,
-    "start_time": 0,
-    "tick_count": 5,
-    "state": "RUNNING",
-    "event_log": {...},
-    "event_queue": {...},
-    "world_logs": [...],
-    "configuration": {...}
-  },
-  "agent": {
-    "agent_type": "ARESimulationAgent",
-    "logs": [...],
-    "logs_count": 9,
-    "iterations": 1,
-    "task": "Find the image file...",
-    ...
-  },
-  "apps": {
-    "FileManager": {...},
-    "BashTool": {...},
-    ...
-  }
+  "checkpoint_id": "event_1_after_tool_call",
+  "scenario_id": "scenario_find_image_file",
+  "simulation_time": 123.456,
+  "wall_clock_time": 1705321425.123,
+  "created_at": "2024-01-15 10:23:45",
+  "checkpoint_type": "after_tool_call",
+  "trigger_event_id": "AGENT-123",
+  "trigger_event_type": "AGENT",
+  "event_sequence_number": 1,
+  "checkpoint_sequence": 1
 }
 ```
+
+**trigger_event.json**
+```json
+{
+  "event_type": "AGENT",
+  "event_id": "AGENT-123",
+  "function_name": "run",
+  "app_name": "BashTool"
+}
+```
+
+**environment_snapshot.json** — full environment state (current_time, event_log, event_queue, world_logs, configuration, etc.)
+
+**agent_snapshot.json** — agent state (logs, logs_count, iterations, task, custom_state, tool name mappings, etc.)
+
+**apps_snapshot/** — directory with one `{AppName}_state.json` file per registered app
 
 ---
 
@@ -499,6 +580,10 @@ Saved with the first checkpoint, contains configuration for auto-replay:
 | `event_queue` | Future scheduled events |
 | `world_logs` | BaseAgentLog objects for world events |
 | `configuration` | Environment config (oracle_mode, etc.) |
+| `is_replaying` | Whether the environment is in replay mode |
+| `verbose` | Verbose logging flag |
+| `waiting_for_notification` | Notification wait state |
+| `time_manager_state` | Time manager state (if available) |
 
 ### Agent State
 
@@ -512,6 +597,10 @@ Saved with the first checkpoint, contains configuration for auto-replay:
 | `custom_state` | Any agent-specific state |
 | `original_tool_name_to_variant` | Tool name mappings (for data augmentation) |
 | `shuffle_seed` | Shuffle configuration seed |
+| `shuffle_tools` | Whether tool order is shuffled |
+| `agent_id` | Agent ID for log correlation |
+| `agent_class` | Fully qualified agent class name |
+| `timestamp` | When state was captured |
 
 ### Apps State
 
@@ -530,25 +619,56 @@ For each registered app:
 
 ### How Replay Works
 
+Replay behavior depends on the checkpoint type:
+
+#### Replay from `after_tool_call` (normal)
+
 1. Load checkpoint data
 2. Load scenario_meta.json for configuration
 3. Reconstruct agent logs from checkpoint
 4. Reconstruct environment state (event_log, world_logs)
 5. Restore app states
-6. Continue agent execution with `initial_agent_logs`
+6. Continue agent execution with `initial_agent_logs` via `run_scenario()`
 7. Optionally create new checkpoints during replay
+
+#### Replay from `before_tool_call`
+
+When replaying from a `before_tool_call` checkpoint the agent logs end with a `ToolCallLog` — the agent decided to call a tool but it hasn't been executed yet. The replay system handles this with a three-step process:
+
+1. Load checkpoint data and restore state (same as above)
+2. **Prepare** the agent: set up tools, system prompt, and replay logs via `prepare_are_simulation_run()`
+3. **Execute the pending tool call**: extract the last `ToolCallLog`, build a `ParsedAction`, and run the tool through the action executor. The resulting `ObservationLog` is appended to agent logs, triggering the `after_tool_call` checkpoint (same event sequence number)
+4. **Continue** with `agent_loop()` for subsequent LLM iterations
+
+This ensures no gap in the checkpoint sequence — replaying from `event_1_before_tool_call` first produces `event_1_after_tool_call`, then continues normally.
 
 ### Replay Output
 
 Replay creates a timestamped output directory:
 
+**From `after_tool_call` checkpoint (e.g., `event_1_after_tool_call`):**
 ```
 test_results/
 ├── checkpoints/                          # Original checkpoints
 └── continual_run_20240115_102345/       # Replay output
     ├── checkpoints/                      # New checkpoints (if enabled)
     │   ├── scenario_meta.json           # Copied from original
-    │   ├── event_2_after_tool_call/     # Continues numbering
+    │   ├── event_2_before_tool_call/    # Continues numbering
+    │   ├── event_2_after_tool_call/
+    │   └── ...
+    └── trace.json                        # Exported trace (if --export)
+```
+
+**From `before_tool_call` checkpoint (e.g., `event_1_before_tool_call`):**
+```
+test_results/
+├── checkpoints/                          # Original checkpoints
+└── continual_run_20240115_102345/       # Replay output
+    ├── checkpoints/                      # New checkpoints (if enabled)
+    │   ├── scenario_meta.json           # Copied from original
+    │   ├── event_1_after_tool_call/     # Pending tool executed first
+    │   ├── event_2_before_tool_call/    # Then normal continuation
+    │   ├── event_2_after_tool_call/
     │   └── ...
     └── trace.json                        # Exported trace (if --export)
 ```
@@ -557,7 +677,8 @@ test_results/
 
 When replaying with checkpoints enabled:
 - Sequence counters continue from the loaded checkpoint
-- If loaded `event_1`, new checkpoints start at `event_2`
+- **From `after_tool_call`**: If loaded `event_1_after_tool_call` (event_seq=1, cp_seq=2), new checkpoints start at `event_2_before_tool_call` (event_seq=2, cp_seq=3)
+- **From `before_tool_call`**: If loaded `event_1_before_tool_call` (event_seq=1, cp_seq=1), the pending tool executes first producing `event_1_after_tool_call` (event_seq=1, cp_seq=2), then continues with `event_2_*`
 - scenario_meta.json is copied to the new checkpoint directory
 
 ---
@@ -595,6 +716,8 @@ When replaying with checkpoints enabled:
 | Large checkpoint files | Verbose app state | Consider implementing `get_state()` carefully |
 | Replay fails | Missing scenario_meta.json | Ensure first checkpoint was created successfully |
 | Wrong checkpoint state | Old timing (pre-fix) | Update to latest version, checkpoints now include ObservationLog |
+| Replay from before_tool_call skips pending tool | Old replay logic | Update to latest version with `_run_from_before_tool_call()` support |
+| Replay from before_tool_call fails with type error | Non-default agent type | Replay from before_tool_call requires `ARESimulationAgent` and `JsonActionExecutor` |
 
 ### Debugging Commands
 
@@ -603,16 +726,32 @@ When replaying with checkpoints enabled:
 find test_results/checkpoints -name "*.json" | head -20
 
 # Check checkpoint metadata
-cat test_results/checkpoints/event_1_after_tool_call/checkpoint.json | jq '.metadata'
+cat test_results/checkpoints/event_1_before_tool_call/metadata.json | jq .
+
+# See what tool the agent decided to call (before execution)
+cat test_results/checkpoints/event_1_before_tool_call/trigger_event.json | jq .
 
 # Count agent logs in checkpoint
-cat test_results/checkpoints/event_1_after_tool_call/checkpoint.json | jq '.agent.logs_count'
+cat test_results/checkpoints/event_1_after_tool_call/agent_snapshot.json | jq '.logs_count'
 
 # View agent logs
-cat test_results/checkpoints/event_1_after_tool_call/checkpoint.json | jq '.agent.logs'
+cat test_results/checkpoints/event_1_after_tool_call/agent_snapshot.json | jq '.logs'
+
+# View environment state
+cat test_results/checkpoints/event_1_after_tool_call/environment_snapshot.json | jq '.current_time'
+
+# View trigger event
+cat test_results/checkpoints/event_1_after_tool_call/trigger_event.json | jq .
+
+# List app snapshots
+ls test_results/checkpoints/event_1_after_tool_call/apps_snapshot/
 
 # Check scenario metadata
 cat test_results/checkpoints/scenario_meta.json | jq .
+
+# Compare state before and after tool call
+diff <(cat test_results/checkpoints/event_1_before_tool_call/agent_snapshot.json | jq '.logs_count') \
+     <(cat test_results/checkpoints/event_1_after_tool_call/agent_snapshot.json | jq '.logs_count')
 ```
 
 ### Logging
@@ -636,9 +775,15 @@ logging.getLogger("are.simulation.checkpoint").setLevel(logging.DEBUG)
 
 ### Current Version
 
-- **Checkpoint Timing Fix**: Checkpoints now capture state AFTER `ObservationLog` is added
-  - Ensures tool call results are included in checkpoint
-  - Implemented via `setup_agent_checkpoint_callback()` instead of `add_to_log()` hook
+- **Dual Checkpoint Timing**: Two checkpoints per tool call
+  - `before_tool_call`: Captures state when agent decides to call a tool (on `ToolCallLog`)
+  - `after_tool_call`: Captures state after tool result is received (on `ObservationLog`)
+  - Both share the same event sequence number (e.g., `event_1_before_tool_call`, `event_1_after_tool_call`)
+  - Configurable via `checkpoint_types` in `CheckpointConfig`
+- **Replay from both checkpoint types**:
+  - `after_tool_call`: Normal replay — agent continues from where it left off
+  - `before_tool_call`: Executes the pending tool call first (producing `after_tool_call` checkpoint), then continues the agent loop. Implemented via `_run_from_before_tool_call()` and `_execute_pending_tool_call()` in `replay.py`
+- **Checkpoint Timing via `setup_agent_checkpoint_callback()`**: Hooks into agent's `log_callback`
 - **Scenario Meta**: Saves `scenario_meta.json` for auto-configurable replay
 - **Continual Run Checkpoints**: Replay creates new checkpoints continuing sequence numbering
 - **CLI Commands**: `are-checkpoint list/info/replay` for checkpoint management
