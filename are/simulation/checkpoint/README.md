@@ -43,7 +43,7 @@ The checkpoint system captures complete system state around each agent tool call
 ### Enable Checkpointing via CLI
 
 ```bash
-# Basic checkpointing
+# Basic checkpointing with are-run
 are-run -s scenario_find_image_file -a default \
     --output_dir ./test_results \
     --enable-checkpoints
@@ -53,6 +53,15 @@ are-run -s scenario_find_image_file -a default \
     --output_dir ./test_results \
     --enable-checkpoints \
     --checkpoint-verbose
+
+# Checkpointing with are-run using a scenario JSON file
+are-run --scenario-file datasets_local/gaia2/search/validation/scenario.json \
+    --output_dir ./test_results \
+    --enable-checkpoints
+
+# Checkpointing with are-benchmark
+are-benchmark run -d /path/to/scenarios --agent default \
+    --enable-checkpoints --checkpoint-verbose
 ```
 
 ### Enable Checkpointing via Python API
@@ -93,6 +102,13 @@ are-checkpoint replay test_results/checkpoints/event_1_after_tool_call
 # Replay from before_tool_call checkpoint
 # The pending tool call is executed first, then the agent continues normally
 are-checkpoint replay test_results/checkpoints/event_1_before_tool_call
+
+# Replay a benchmark scenario (auto-loads from stored scenario_source_path)
+are-checkpoint replay test_results/checkpoints/event_1_before_tool_call
+
+# Replay a benchmark scenario with judge engine override
+are-checkpoint replay test_results/checkpoints/event_1_before_tool_call \
+    --judge-model gpt-4 --judge-provider azure
 ```
 
 ---
@@ -221,7 +237,9 @@ manager = CheckpointManager(config)
 manager.set_scenario_config(
     runner_config=runner_config,
     scenario_creation_params={...},
-    scenario_initialization_params={...}
+    scenario_initialization_params={...},
+    scenario_source_path="/path/to/scenario.json",  # optional, for benchmark scenarios
+    scenario_source_type="json_file",                # optional: "registry" or "json_file"
 )
 
 # Create checkpoint
@@ -449,6 +467,9 @@ are-checkpoint replay <checkpoint_path> [OPTIONS]
 --max-turns          Override max turns
 -e, --export         Export trace to JSON
 -o, --output-dir     Override output directory
+--scenario-file      Path to scenario JSON file (for benchmark scenarios not in registry)
+--judge-model        Model for judge engine (for benchmark scenario validation)
+--judge-provider     Provider for judge engine (for benchmark scenario validation)
 -v, --verbose        Enable verbose logging
 --log-level          Set logging level
 ```
@@ -471,6 +492,18 @@ are-checkpoint replay test_results/checkpoints/event_1_after_tool_call -e -v
 
 # Replay with custom output directory
 are-checkpoint replay test_results/checkpoints/event_1_after_tool_call -o ./replay_results
+
+# Replay a benchmark scenario (auto-loaded from stored scenario_source_path)
+# No --scenario-file needed if the original run stored the path
+are-checkpoint replay test_results/checkpoints/event_1_before_tool_call
+
+# Replay with explicit scenario file (overrides stored path)
+are-checkpoint replay test_results/checkpoints/event_1_before_tool_call \
+    --scenario-file datasets_local/gaia2/search/validation/scenario.json
+
+# Replay with judge engine (for benchmark scenario validation)
+are-checkpoint replay test_results/checkpoints/event_1_before_tool_call \
+    --judge-model gpt-4 --judge-provider azure
 ```
 
 ---
@@ -521,12 +554,27 @@ Saved with the first checkpoint, contains configuration for auto-replay:
     "max_turns": 10,
     "oracle": false,
     "export": true,
+    "judge_engine_config": {
+      "model_name": "gpt-4",
+      "provider": "azure",
+      "endpoint": null
+    },
     ...
   },
   "scenario_creation_params": {...},
-  "scenario_initialization_params": {...}
+  "scenario_initialization_params": {...},
+  "scenario_source_type": "json_file",
+  "scenario_source_path": "/path/to/scenario.json"
 }
 ```
+
+The `scenario_source_type` field indicates how the scenario was loaded:
+- `"registry"` — loaded from the built-in scenario registry (via `are-run -s`)
+- `"json_file"` — loaded from a JSON file (via `are-run --scenario-file` or `are-benchmark`)
+
+The `scenario_source_path` stores the original file path (local path or `hf://` URI) so replay can auto-load the scenario without manual `--scenario-file` flags.
+
+The `judge_engine_config` in `runner_config` stores the judge model configuration used during benchmark runs, enabling auto-replay with the same judge settings.
 
 ### Checkpoint Files
 
@@ -783,6 +831,14 @@ logging.getLogger("are.simulation.checkpoint").setLevel(logging.DEBUG)
 - **Replay from both checkpoint types**:
   - `after_tool_call`: Normal replay — agent continues from where it left off
   - `before_tool_call`: Executes the pending tool call first (producing `after_tool_call` checkpoint), then continues the agent loop. Implemented via `_run_from_before_tool_call()` and `_execute_pending_tool_call()` in `replay.py`
+- **Benchmark Integration**: Checkpoints work with `are-benchmark` via `--enable-checkpoints` / `--checkpoint-verbose` flags
+  - Scenario source path (`scenario_source_path`) automatically stored in `scenario_meta.json`
+  - Source type (`scenario_source_type`) auto-detected: `"registry"` for built-in scenarios, `"json_file"` for JSON-loaded scenarios (including HuggingFace `hf://` URIs)
+  - Judge engine config (`judge_engine_config`) stored in `runner_config` for benchmark runs
+- **Auto-Replay**: Replay automatically loads scenario and judge config from stored metadata
+  - No need to pass `--scenario-file` if the original run stored the source path
+  - No need to pass `--judge-model`/`--judge-provider` if the original run stored judge config
+  - CLI flags still available as overrides (take priority over stored values)
 - **Checkpoint Timing via `setup_agent_checkpoint_callback()`**: Hooks into agent's `log_callback`
 - **Scenario Meta**: Saves `scenario_meta.json` for auto-configurable replay
 - **Continual Run Checkpoints**: Replay creates new checkpoints continuing sequence numbering

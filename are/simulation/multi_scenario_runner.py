@@ -145,6 +145,7 @@ def _create_scenario_runner_config(
         use_custom_logger=config.use_custom_logger,
         tool_augmentation_config=config.tool_augmentation_config,
         env_events_config=config.env_events_config,
+        judge_engine_config=config.judge_engine_config,
     )
     if scenario.nb_turns is not None:
         runner_config.max_turns = scenario.nb_turns
@@ -206,6 +207,17 @@ def process_scenario(
             agent_config_builder=agent_config_builder,
             agent_builder=agent_builder,
         )
+        # Pass scenario source info for checkpoint metadata
+        scenario_source_path = getattr(scenario, '_checkpoint_source_path', None)
+        if scenario_source_path is not None:
+            scenario_runner._scenario_source_path = scenario_source_path
+            scenario_runner._scenario_source_type = "json_file"
+        else:
+            from are.simulation.scenarios.scenario_imported_from_json.benchmark_scenario import (
+                BenchmarkScenarioImportedFromJson,
+            )
+            if isinstance(scenario, BenchmarkScenarioImportedFromJson):
+                scenario_runner._scenario_source_type = "json_file"
         logger.info(f"Checkpointing enabled for scenario {scenario_id}")
     else:
         scenario_runner = ScenarioRunner(

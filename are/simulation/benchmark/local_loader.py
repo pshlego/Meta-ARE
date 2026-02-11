@@ -74,6 +74,8 @@ def _create_local_scenario_iterator(
             )
             if scenario is None or completed_events is None:
                 return None
+            # Store the source file path for checkpoint metadata
+            scenario._checkpoint_source_path = scenario_path
             logger.info(f"Successfully loaded scenario: {scenario_path}")
             return scenario, completed_events
         except FileNotFoundError:

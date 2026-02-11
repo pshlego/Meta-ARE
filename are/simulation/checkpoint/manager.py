@@ -10,7 +10,6 @@ The classification logic is now handled directly in wrappers.py.
 
 import json
 import time
-from pathlib import Path
 from typing import Dict, Any, Optional, List
 import logging
 
@@ -47,12 +46,16 @@ class CheckpointManager:
         self._scenario_runner_config: Optional[Any] = None
         self._scenario_creation_params: Optional[Dict[str, Any]] = None
         self._scenario_initialization_params: Optional[Dict[str, Any]] = None
+        self._scenario_source_path: Optional[str] = None
+        self._scenario_source_type: Optional[str] = None  # "registry", "json_file", "hf"
     
     def set_scenario_config(
         self, 
         runner_config: Any,  # ScenarioRunnerConfig
         scenario_creation_params: Optional[Dict[str, Any]] = None,
         scenario_initialization_params: Optional[Dict[str, Any]] = None,
+        scenario_source_path: Optional[str] = None,
+        scenario_source_type: Optional[str] = None,
     ) -> None:
         """
         Set scenario runner configuration for saving to scenario_meta.json.
@@ -64,10 +67,14 @@ class CheckpointManager:
             runner_config: ScenarioRunnerConfig (Pydantic model)
             scenario_creation_params: Parameters used to create the scenario
             scenario_initialization_params: Parameters used to initialize the scenario
+            scenario_source_path: Path to the scenario source file (for benchmark JSON scenarios)
+            scenario_source_type: Type of scenario source ("registry", "json_file", "hf")
         """
         self._scenario_runner_config = runner_config
         self._scenario_creation_params = scenario_creation_params
         self._scenario_initialization_params = scenario_initialization_params
+        self._scenario_source_path = scenario_source_path
+        self._scenario_source_type = scenario_source_type
         self.logger.debug("Scenario config set for checkpointing")
     
     def _save_scenario_meta_if_needed(self, scenario_id: str) -> None:
@@ -106,6 +113,12 @@ class CheckpointManager:
             
             if self._scenario_initialization_params:
                 scenario_meta["scenario_initialization_params"] = self._scenario_initialization_params
+            
+            # Add scenario source information (for benchmark JSON scenarios)
+            if self._scenario_source_path:
+                scenario_meta["scenario_source_path"] = self._scenario_source_path
+            if self._scenario_source_type:
+                scenario_meta["scenario_source_type"] = self._scenario_source_type
             
             # Save to scenario_meta.json in checkpoint_dir
             meta_file = self.config.checkpoint_dir / "scenario_meta.json"

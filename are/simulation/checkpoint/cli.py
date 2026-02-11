@@ -192,6 +192,22 @@ def info_cmd(checkpoint_path: str, as_json: bool, log_level: str):
     help="Override output directory (defaults to sibling of checkpoint dir).",
 )
 @click.option(
+    "--scenario-file",
+    type=click.Path(exists=True, dir_okay=False),
+    required=False,
+    help="Path to scenario JSON file (required for benchmark scenarios not in the registry).",
+)
+@click.option(
+    "--judge-model",
+    required=False,
+    help="Model to use for the judge engine (for benchmark scenario validation).",
+)
+@click.option(
+    "--judge-provider",
+    required=False,
+    help="Model provider for the judge engine (for benchmark scenario validation).",
+)
+@click.option(
     "-v",
     "--verbose",
     is_flag=True,
@@ -213,6 +229,9 @@ def replay_cmd(
     max_turns: Optional[int],
     export: Optional[bool],
     output_dir: Optional[str],
+    scenario_file: Optional[str],
+    judge_model: Optional[str],
+    judge_provider: Optional[str],
     verbose: bool,
     log_level: str,
 ):
@@ -236,6 +255,11 @@ def replay_cmd(
         
         # Replay with more turns
         are-checkpoint replay test_results/checkpoints/event_1_after_tool_call --max-turns 20
+        
+        # Replay a benchmark scenario (loaded from JSON file)
+        are-checkpoint replay test_results/checkpoints/event_1_before_tool_call \\
+            --scenario-file datasets_local/gaia2/search/validation/scenario.json \\
+            --judge-model gpt-4 --judge-provider azure
     """
     setup_logging(log_level)
     
@@ -244,7 +268,10 @@ def replay_cmd(
         runner = CheckpointReplayRunner(checkpoint_path, verbose=verbose)
         
         # Load scenario
-        scenario = _load_scenario_for_replay(runner, scenario_id)
+        scenario = _load_scenario_for_replay(
+            runner, scenario_id, scenario_file=scenario_file,
+            judge_model=judge_model, judge_provider=judge_provider,
+        )
         
         # Load or create config
         config = _prepare_config_for_replay(
@@ -255,6 +282,8 @@ def replay_cmd(
             max_turns=max_turns,
             export=export,
             output_dir=output_dir,
+            judge_model=judge_model,
+            judge_provider=judge_provider,
         )
         
         click.echo(f"Replaying from checkpoint: {checkpoint_path}")
@@ -303,9 +332,24 @@ def replay_cmd(
 
 def _load_scenario_for_replay(
     runner: CheckpointReplayRunner, 
-    scenario_id: Optional[str]
+    scenario_id: Optional[str],
+    scenario_file: Optional[str] = None,
+    judge_model: Optional[str] = None,
+    judge_provider: Optional[str] = None,
 ) -> "Scenario":
-    """Load the scenario for replay."""
+    """
+    Load the scenario for replay.
+    
+    Supports both registry scenarios (from are-run) and benchmark scenarios
+    loaded from JSON files (from are-benchmark).
+    
+    Args:
+        runner: The checkpoint replay runner
+        scenario_id: Optional scenario ID override
+        scenario_file: Path to scenario JSON file (for benchmark scenarios)
+        judge_model: Model for judge engine (for benchmark scenario preprocessing)
+        judge_provider: Provider for judge engine (for benchmark scenario preprocessing)
+    """
     from are.simulation.scenarios.utils.constants import ALL_SCENARIOS
     
     # Determine scenario ID
@@ -326,31 +370,142 @@ def _load_scenario_for_replay(
             "Could not determine scenario ID. Please specify --scenario-id."
         )
     
-    # Load scenario from registry
-    if scenario_id not in ALL_SCENARIOS:
-        raise click.UsageError(f"Scenario '{scenario_id}' not found in registry.")
-    
-    scenario_class = ALL_SCENARIOS[scenario_id]
-    scenario = scenario_class()
-    
-    # Initialize scenario - try to use params from metadata
-    init_params = {}
+    # Check scenario source type from metadata
+    scenario_source_type = None
+    scenario_source_path_from_meta = None
     if runner.has_scenario_meta():
-        meta_loader = runner.scenario_meta_loader
-        creation_params = meta_loader.get_scenario_creation_params()
-        init_params_str = meta_loader.get_scenario_initialization_params()
-        
-        # Parse initialization params if they're a string
-        if isinstance(init_params_str, str):
-            try:
-                import json
-                init_params = json.loads(init_params_str)
-            except (json.JSONDecodeError, TypeError):
-                init_params = {}
-        elif isinstance(init_params_str, dict):
-            init_params = init_params_str
+        meta = runner.get_scenario_meta()
+        scenario_source_type = meta.get("scenario_source_type")
+        scenario_source_path_from_meta = meta.get("scenario_source_path")
     
-    scenario.initialize(**init_params)
+    # Determine the effective scenario file path
+    effective_scenario_file = scenario_file or scenario_source_path_from_meta
+    
+    # Strategy 1: Try loading from registry (for are-run scenarios)
+    if scenario_id in ALL_SCENARIOS and scenario_source_type != "json_file":
+        scenario_class = ALL_SCENARIOS[scenario_id]
+        scenario = scenario_class()
+        
+        # Initialize scenario - try to use params from metadata
+        init_params = {}
+        if runner.has_scenario_meta():
+            meta_loader = runner.scenario_meta_loader
+            init_params_str = meta_loader.get_scenario_initialization_params()
+            
+            # Parse initialization params if they're a string
+            if isinstance(init_params_str, str):
+                try:
+                    init_params = json.loads(init_params_str)
+                except (json.JSONDecodeError, TypeError):
+                    init_params = {}
+            elif isinstance(init_params_str, dict):
+                init_params = init_params_str
+        
+        scenario.initialize(**init_params)
+        return scenario
+    
+    # Strategy 2: Load from JSON file (for are-benchmark scenarios)
+    if effective_scenario_file is not None:
+        return _load_benchmark_scenario_from_file(
+            runner, effective_scenario_file, judge_model, judge_provider
+        )
+    
+    # Strategy 3: Scenario not found anywhere
+    if scenario_source_type == "json_file":
+        raise click.UsageError(
+            f"Scenario '{scenario_id}' is a benchmark scenario loaded from a JSON file. "
+            f"Please provide the scenario file path with --scenario-file."
+        )
+    
+    raise click.UsageError(
+        f"Scenario '{scenario_id}' not found in registry. "
+        f"If this is a benchmark scenario, use --scenario-file to specify the JSON file path."
+    )
+
+
+def _load_benchmark_scenario_from_file(
+    runner: CheckpointReplayRunner,
+    scenario_file: str,
+    judge_model: Optional[str] = None,
+    judge_provider: Optional[str] = None,
+) -> "Scenario":
+    """
+    Load a benchmark scenario from a JSON file and preprocess it.
+    
+    This handles benchmark scenarios that were created via are-benchmark
+    and are not in the scenario registry.
+    
+    Args:
+        runner: The checkpoint replay runner
+        scenario_file: Path to the scenario JSON file
+        judge_model: Model for judge engine
+        judge_provider: Provider for judge engine
+    """
+    from are.simulation.scenarios.scenario_imported_from_json.utils import (
+        preprocess_scenario_from_config,
+    )
+    from are.simulation.data_handler.importer import JsonScenarioImporter
+    from are.simulation.scenarios.config import ScenarioRunnerConfig
+    from are.simulation.agents.are_simulation_agent_config import LLMEngineConfig
+    
+    scenario_path = Path(scenario_file)
+    if not scenario_path.exists():
+        raise click.UsageError(f"Scenario file not found: {scenario_file}")
+    
+    # Read the JSON file
+    with open(scenario_path, 'r', encoding='utf-8') as f:
+        scenario_str = f.read()
+    
+    # Import the scenario from JSON
+    (
+        scenario,
+        _completed_events,
+        _,
+    ) = JsonScenarioImporter().import_from_json_to_benchmark(
+        scenario_str, load_completed_events=True
+    )
+    
+    # Get runner config from metadata for preprocessing
+    config = runner.get_runner_config_from_meta()
+    if config is None:
+        config = ScenarioRunnerConfig(
+            model="unknown",
+            model_provider="azure",
+            agent="default",
+        )
+    
+    # Set up judge engine config for preprocessing
+    # Priority: CLI flags > metadata config > no judge
+    if judge_model is not None:
+        config.judge_engine_config = LLMEngineConfig(
+            model_name=judge_model,
+            provider=judge_provider or "azure",
+        )
+    elif config.judge_engine_config is None:
+        # Try to get from metadata runner_config
+        if runner.has_scenario_meta():
+            meta = runner.get_scenario_meta()
+            rc = meta.get("runner_config", {})
+            jec = rc.get("judge_engine_config")
+            if jec and isinstance(jec, dict):
+                config.judge_engine_config = LLMEngineConfig(
+                    model_name=jec.get("model_name", ""),
+                    provider=jec.get("provider", "azure"),
+                    endpoint=jec.get("endpoint"),
+                )
+    
+    if config.judge_engine_config is None:
+        click.echo(
+            "Warning: No judge engine config available. "
+            "Benchmark scenario validation may not work correctly. "
+            "Use --judge-model and --judge-provider to specify.",
+            err=True,
+        )
+    
+    # Preprocess scenario (sets up judge, runs oracle, initializes turns)
+    preprocess_scenario_from_config(scenario=scenario, config=config)
+    
+    click.echo(f"  Loaded benchmark scenario from: {scenario_file}")
     
     return scenario
 
@@ -363,9 +518,12 @@ def _prepare_config_for_replay(
     max_turns: Optional[int],
     export: Optional[bool],
     output_dir: Optional[str],
+    judge_model: Optional[str] = None,
+    judge_provider: Optional[str] = None,
 ) -> "ScenarioRunnerConfig":
     """Prepare configuration for replay, merging metadata with overrides."""
     from are.simulation.scenarios.config import ScenarioRunnerConfig
+    from are.simulation.agents.are_simulation_agent_config import LLMEngineConfig
     
     # Start with config from metadata
     config = runner.get_runner_config_from_meta()
@@ -403,6 +561,13 @@ def _prepare_config_for_replay(
             config.export = export
         if output_dir is not None:
             config.output_dir = output_dir
+    
+    # Apply judge engine config overrides
+    if judge_model is not None:
+        config.judge_engine_config = LLMEngineConfig(
+            model_name=judge_model,
+            provider=judge_provider or "azure",
+        )
     
     return config
 

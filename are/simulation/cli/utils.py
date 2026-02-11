@@ -14,6 +14,7 @@ to reduce code duplication and ensure consistent behavior.
 
 import json
 import logging
+import os
 import signal
 import sys
 import threading
@@ -334,6 +335,8 @@ def run_scenarios_by_json_files(
                 loaded_scenario.env_events_config = config.env_events_config
 
             initialized_scenario = _initialize_loaded_scenario(loaded_scenario, config)
+            # Store the source file path for checkpoint metadata
+            initialized_scenario._checkpoint_source_path = os.path.abspath(json_path)
             scenarios.append(initialized_scenario)
             logger.info(f"Loaded scenario from {json_path}")
         except Exception as e:

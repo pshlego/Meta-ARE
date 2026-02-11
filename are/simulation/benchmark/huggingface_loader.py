@@ -238,6 +238,9 @@ def _create_huggingface_scenario_iterator(
                 if scenario is None or completed_events is None:
                     continue
 
+                # Store HF source info for checkpoint metadata
+                scenario._checkpoint_source_path = f"hf://{dataset_name}/{dataset_config}/{dataset_split}/{scenario_id}"
+
                 # Set the run_number from the HuggingFace row metadata
                 # This ensures the run_number is preserved from the dataset
                 scenario.run_number = row.get("run_number")

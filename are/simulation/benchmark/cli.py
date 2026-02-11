@@ -250,6 +250,19 @@ def validate_benchmark_scenario_sources(**scenario_params):
 )
 @output_config_options()
 @internal_options()
+# Checkpoint options
+@click.option(
+    "--enable-checkpoints",
+    is_flag=True,
+    default=False,
+    help="Enable checkpoint capture during scenario execution (captures before and after each agent tool call).",
+)
+@click.option(
+    "--checkpoint-verbose",
+    is_flag=True,
+    default=False,
+    help="Enable verbose logging for checkpoint operations.",
+)
 @click.option(
     "--trace_dump_format",
     default="both",
@@ -372,6 +385,9 @@ def main(
     judge_model: str = DEFAULT_JUDGE_MODEL,
     judge_provider: str | None = None,
     judge_endpoint: str | None = None,
+    # Checkpoint parameters
+    enable_checkpoints: bool = False,
+    checkpoint_verbose: bool = False,
     **kwargs,
 ):
     """
@@ -586,6 +602,8 @@ def main(
                 judge_provider=judge_provider,
                 judge_endpoint=judge_endpoint,
                 log_level=log_level,  # Pass log level to run_dataset
+                enable_checkpoints=enable_checkpoints,
+                checkpoint_verbose=checkpoint_verbose,
                 **run_dataset_kwargs,
             )
             results[config] = result

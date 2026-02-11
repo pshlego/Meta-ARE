@@ -26,10 +26,9 @@ Checkpoint Timing:
     (e.g., event_1_before_tool_call and event_1_after_tool_call).
 """
 
-from typing import Dict, Any, Optional, List, Union, Callable
+from typing import Dict, Any, Optional, Callable
 import logging
 import time
-from pathlib import Path
 
 # Import ARE core classes
 from are.simulation.environment import Environment, EnvironmentConfig
@@ -549,10 +548,37 @@ class CheckpointableScenarioRunner(ScenarioRunner):
         if scenario_initialization_params is None:
             scenario_initialization_params = getattr(scenario, 'initialization_params', None)
         
+        # Detect scenario source type and path
+        scenario_source_path = getattr(self, '_scenario_source_path', None)
+        scenario_source_type = getattr(self, '_scenario_source_type', None)
+        
+        # Try to get source path from the scenario object itself
+        if scenario_source_path is None and not isinstance(scenario, str):
+            scenario_source_path = getattr(scenario, '_checkpoint_source_path', None)
+        
+        if scenario_source_type is None:
+            # Auto-detect: check if this is a benchmark scenario (imported from JSON)
+            if isinstance(scenario, str):
+                # Scenario passed as JSON string — it's a benchmark/JSON scenario
+                scenario_source_type = "json_file"
+            elif scenario_source_path is not None:
+                # Has a source file path — it was loaded from a JSON file
+                scenario_source_type = "json_file"
+            else:
+                from are.simulation.scenarios.scenario_imported_from_json.benchmark_scenario import (
+                    BenchmarkScenarioImportedFromJson,
+                )
+                if isinstance(scenario, BenchmarkScenarioImportedFromJson):
+                    scenario_source_type = "json_file"
+                else:
+                    scenario_source_type = "registry"
+        
         self.checkpoint_manager.set_scenario_config(
             runner_config=config,
             scenario_creation_params=scenario_creation_params,
             scenario_initialization_params=scenario_initialization_params,
+            scenario_source_path=scenario_source_path,
+            scenario_source_type=scenario_source_type,
         )
         logger.debug("Scenario config passed to checkpoint manager")
     

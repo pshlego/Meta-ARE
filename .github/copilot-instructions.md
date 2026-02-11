@@ -22,3 +22,8 @@
 ## Dependency management
 - Add/remove deps using `uv add <pkg>` / `uv remove <pkg>` (or whatever standard this repo uses).
 - If a lockfile is present, keep it updated consistently with `uv` workflows.
+
+## Documentation & consistency (IMPORTANT)
+- **After any code changes**, always check and update relevant documentation (only the docs in `are/simulation/checkpoint`, do not touch other docs that come with the original repo), output-related files (docstring, config references), and log/result schemas to reflect the latest changes.
+- If inconsistencies are found between code and documentation, always correct them. If unsure how to resolve an inconsistency, ask the user before proceeding.
+- Keep CLI help text, config file comments, and doc examples in sync with actual implementations.

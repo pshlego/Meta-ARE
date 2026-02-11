@@ -228,6 +228,8 @@ def run_dataset(
     judge_endpoint: str | None = None,
     log_level: str = "INFO",
     phase_name: str | None = None,
+    enable_checkpoints: bool = False,
+    checkpoint_verbose: bool = False,
     **kwargs,
 ) -> MultiScenarioValidationResult:
     """Run a dataset of scenarios with the specified configuration.
@@ -281,6 +283,23 @@ def run_dataset(
         **setup_kwargs,
     )
 
+    # Create checkpoint configuration if enabled
+    checkpoint_config = None
+    if enable_checkpoints:
+        from pathlib import Path
+        from are.simulation.checkpoint import CheckpointConfig
+
+        # Checkpoints stored in subdirectory of output_dir
+        checkpoint_dir = Path(output_dir) / "checkpoints" if output_dir else Path("./checkpoints")
+
+        checkpoint_config = CheckpointConfig(
+            enabled=True,
+            checkpoint_dir=checkpoint_dir,
+            verbose_logging=checkpoint_verbose,
+        )
+
+        logger.info(f"Checkpointing enabled: storing checkpoints in {checkpoint_dir}")
+
     runner_config = MultiScenarioRunnerConfig(
         model=model,
         model_provider=model_provider,
@@ -310,6 +329,7 @@ def run_dataset(
             endpoint=judge_endpoint,
         ),
         log_level=log_level,
+        checkpoint_config=checkpoint_config,
     )
 
     # Set base metadata on all scenarios
