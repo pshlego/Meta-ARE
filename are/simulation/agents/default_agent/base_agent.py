@@ -86,6 +86,8 @@ DEFAULT_STEP_2_ROLE = OrderedDict(
         ("error", MessageRole.TOOL_RESPONSE),
         ("agent_user_interface", MessageRole.USER),
         ("environment_notifications", MessageRole.USER),
+        ("hint", MessageRole.USER),
+        ("task_reminder", MessageRole.USER),
     ]
 )
 
@@ -109,6 +111,8 @@ DEFAULT_STEP_2_MESSAGE = OrderedDict(
             "environment_notifications",
             "Environment notifications updates:\n***\n{content}\n***\n",
         ),
+        ("hint", "[HINT]:\n{content}\n"),
+        ("task_reminder", "[TASK REMINDER]:\n{content}\n"),
     ]
 )
 
