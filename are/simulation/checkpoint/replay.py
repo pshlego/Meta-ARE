@@ -566,8 +566,9 @@ class CheckpointReplayRunner:
         # Mark as replaying initially
         env.is_replaying = True
         
-        # Run scenario to set up apps
-        env.run(scenario, wait_for_end=False)
+        # Run scenario to set up apps, but do NOT re-schedule scenario events
+        # (they are restored from the checkpoint's event_log to avoid duplication)
+        env.run(scenario, wait_for_end=False, schedule_events=False)
         
         # Enable checkpointing after scenario setup
         if enable_checkpoints and self.checkpoint_manager and isinstance(env, CheckpointableEnvironment):

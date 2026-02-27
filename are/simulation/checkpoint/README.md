@@ -766,6 +766,7 @@ When replaying with checkpoints enabled:
 | Wrong checkpoint state | Old timing (pre-fix) | Update to latest version, checkpoints now include ObservationLog |
 | Replay from before_tool_call skips pending tool | Old replay logic | Update to latest version with `_run_from_before_tool_call()` support |
 | Replay from before_tool_call fails with type error | Non-default agent type | Replay from before_tool_call requires `ARESimulationAgent` and `JsonActionExecutor` |
+| Duplicate `send_message_to_agent` in replayed trace / `ToolCallCountsFailure` | Race condition: scenario events re-fired during replay could be recorded into the restored event_log | Fixed — `env.run()` now passes `schedule_events=False` during replay so scenario events are not re-scheduled (they are restored from the checkpoint) |
 
 ### Debugging Commands
 
