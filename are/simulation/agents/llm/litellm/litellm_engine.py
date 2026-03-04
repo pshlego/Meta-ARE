@@ -6,6 +6,7 @@
 
 
 import logging
+import time
 import traceback
 from typing import Any
 
@@ -123,6 +124,8 @@ Action:
                 else None
             )
 
+            t0 = time.time()
+
             if self.model_config.provider == "azure":
                 assert self._client is not None, "CloudGPT client not initialized."
                 response = completion(
@@ -144,6 +147,8 @@ Action:
                     mock_response=self.mock_response,
                 )
 
+            completion_duration = time.time() - t0
+
             assert type(response) is ModelResponse
             assert len(response.choices) >= 1
             assert type(response.choices[0]) is Choices
@@ -155,6 +160,27 @@ Action:
             for stop_token in stop_sequences:
                 res = res.split(stop_token)[0]
 
-            return res, None
+            # Extract token usage from the LLM response
+            metadata: dict[str, int | float] = {
+                "completion_duration": completion_duration,
+            }
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                metadata["prompt_tokens"] = getattr(usage, "prompt_tokens", 0) or 0
+                metadata["completion_tokens"] = getattr(usage, "completion_tokens", 0) or 0
+                metadata["total_tokens"] = getattr(usage, "total_tokens", 0) or 0
+                # reasoning_tokens may be a top-level attr (litellm) or nested
+                reasoning = getattr(usage, "reasoning_tokens", None)
+                if reasoning is None:
+                    details = getattr(usage, "completion_tokens_details", None)
+                    if details is not None:
+                        reasoning = (
+                            details.get("reasoning_tokens", 0)
+                            if isinstance(details, dict)
+                            else getattr(details, "reasoning_tokens", 0)
+                        )
+                metadata["reasoning_tokens"] = reasoning or 0
+
+            return res, metadata
         except (AuthenticationError, APIError) as e:
             raise LLMEngineException("Auth error in litellm.") from e
