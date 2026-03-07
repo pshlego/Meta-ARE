@@ -60,7 +60,7 @@ Action:
 """
         self._client = None
         if self.model_config.provider == "azure":
-            token_provider = get_openai_token_provider(use_broker_login=True)
+            token_provider = get_openai_token_provider(use_azure_cli=True)
             token_provider()
 
             self._api_version = "2025-04-01-preview"
