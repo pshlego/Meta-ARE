@@ -264,6 +264,13 @@ def validate_benchmark_scenario_sources(**scenario_params):
     help="Enable verbose logging for checkpoint operations.",
 )
 @click.option(
+    "--hints-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=str),
+    required=False,
+    default=None,
+    help="JSON file mapping scenario_id to hint text for system prompt injection.",
+)
+@click.option(
     "--trace_dump_format",
     default="both",
     type=click.Choice(["hf", "lite", "both"]),
@@ -388,6 +395,8 @@ def main(
     # Checkpoint parameters
     enable_checkpoints: bool = False,
     checkpoint_verbose: bool = False,
+    # Hints file
+    hints_file: str | None = None,
     **kwargs,
 ):
     """
@@ -604,6 +613,7 @@ def main(
                 log_level=log_level,  # Pass log level to run_dataset
                 enable_checkpoints=enable_checkpoints,
                 checkpoint_verbose=checkpoint_verbose,
+                hints_file_path=hints_file,
                 **run_dataset_kwargs,
             )
             results[config] = result
