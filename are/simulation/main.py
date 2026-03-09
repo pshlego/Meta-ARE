@@ -162,6 +162,13 @@ def validate_main_scenario_sources(**scenario_params):
     default=False,
     help="Enable verbose logging for checkpoint operations.",
 )
+@click.option(
+    "--hints-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=str),
+    required=False,
+    default=None,
+    help="JSON file mapping scenario_id to hint text for system prompt injection.",
+)
 def main(
     model: str,
     provider: str | None = None,
@@ -189,6 +196,8 @@ def main(
     # Checkpoint parameters
     enable_checkpoints: bool = False,
     checkpoint_verbose: bool = False,
+    # Hints file
+    hints_file: str | None = None,
 ):
     """
     Main entry point for the Meta Agents Research Environments scenario runner CLI.
@@ -268,6 +277,7 @@ def main(
         env_events_config=env_events_config,
         enable_caching=False,
         checkpoint_config=checkpoint_config,
+        hints_file_path=hints_file,
     )
 
     # Run scenarios by ID

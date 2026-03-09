@@ -223,9 +223,14 @@ class ScenarioRunner:
         max_turns: int | None = None,
         simulated_generation_time_mode: str = "measured",
         use_custom_logger: bool = True,
+        hints_file_path: str | None = None,
     ) -> ScenarioValidationResult:
         agent_config: RunnableARESimulationAgentConfig = (
-            self.agent_config_builder.build(agent_name=agent)
+            self.agent_config_builder.build(
+                agent_name=agent,
+                scenario_id=scenario_id,
+                hints_file_path=hints_file_path,
+            )
         )
 
         # Set the use_custom_logger parameter in the base agent config
@@ -303,6 +308,7 @@ class ScenarioRunner:
                     config.max_turns,
                     config.simulated_generation_time_mode,
                     config.use_custom_logger,
+                    config.hints_file_path,
                 )
         except Exception as exception:
             logger.exception(f"Failed to run agent: {exception}")

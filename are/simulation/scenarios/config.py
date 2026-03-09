@@ -120,6 +120,9 @@ class ScenarioRunnerConfig(BaseModel):
     # Checkpoint configuration (type: CheckpointConfig from are.simulation.checkpoint)
     checkpoint_config: Any = None
 
+    # Path to a JSON hints file mapping scenario_id -> hint text for system prompt injection
+    hints_file_path: str | None = None
+
     def get_config_hash(self) -> str:
         """
         Generate a hash of the relevant config parameters that affect scenario execution.
