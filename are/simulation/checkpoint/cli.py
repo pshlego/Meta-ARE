@@ -208,6 +208,13 @@ def info_cmd(checkpoint_path: str, as_json: bool, log_level: str):
     help="Model provider for the judge engine (for benchmark scenario validation).",
 )
 @click.option(
+    "--max-duration",
+    type=int,
+    required=False,
+    help="Override max simulation duration for replay (seconds). Limits how long "
+         "the environment loop runs, useful when replaying from a mid-task checkpoint.",
+)
+@click.option(
     "-v",
     "--verbose",
     is_flag=True,
@@ -232,6 +239,7 @@ def replay_cmd(
     scenario_file: Optional[str],
     judge_model: Optional[str],
     judge_provider: Optional[str],
+    max_duration: Optional[int],
     verbose: bool,
     log_level: str,
 ):
@@ -294,7 +302,9 @@ def replay_cmd(
         click.echo("")
         
         # Run replay
-        result, result_output_dir = runner.run(scenario, config)
+        result, result_output_dir = runner.run(
+            scenario, config, max_duration=max_duration,
+        )
         
         # Report results
         click.echo("")

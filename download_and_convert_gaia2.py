@@ -1,9 +1,9 @@
 from datasets import load_dataset
 import os, json
 
-BASE = "/Data2/juezhang/meta_are/datasets_local/gaia2"
+BASE = "/Data2/v-parksungho/Meta-ARE/datasets_local/gaia2"
 # configs = ["execution","search","adaptability","time","ambiguity"]
-configs = ["search"]
+configs = ["adaptability"]
 
 for cfg in configs:
     ds = load_dataset("meta-agents-research-environments/gaia2",

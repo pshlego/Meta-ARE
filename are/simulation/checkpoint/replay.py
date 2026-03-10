@@ -41,6 +41,7 @@ from are.simulation.scenarios.config import ScenarioRunnerConfig
 from are.simulation.scenarios.scenario import ScenarioStatus, ScenarioValidationResult
 from are.simulation.types import (
     CompletedEvent,
+    ConditionCheckEvent,
     EnvironmentType,
     EventLog,
     SimulatedGenerationTimeConfig,
@@ -447,12 +448,98 @@ class CheckpointReplayRunner:
         
         if self.verbose:
             self.logger.info(f"Restored state for {restored_count} apps")
-    
+
+    def _schedule_unfired_events(
+        self,
+        env: Environment,
+        scenario: Scenario,
+        completed_events: List[CompletedEvent],
+    ) -> int:
+        """Schedule scenario events that were not yet completed at checkpoint time.
+
+        During replay, ``schedule_events=False`` prevents ALL events from being
+        added to the event queue.  This is correct for events that already
+        completed before the checkpoint, but future events — particularly
+        ``ConditionCheckEvent`` turn triggers and their ENV-event successors
+        needed by adaptability tasks — must still be scheduled so they can fire
+        at the right simulation time.
+
+        ``ConditionCheckEvent`` instances are always scheduled regardless of
+        whether a prior CHECK_N appears in the completed events, because they
+        are polling events that must keep running until their condition is met.
+        The fresh event from preprocessing carries the correct condition
+        function and successor chain (including ENV events for adaptability
+        tasks).
+
+        To prevent duplicate firing of events that already completed before the
+        checkpoint (e.g. an ENV event whose condition was already satisfied),
+        we seed the event queue's ``already_scheduled`` set with the completed
+        event IDs.  The queue's built-in dedup then rejects any successor that
+        was already executed.
+
+        Only root events (those with no unresolved dependencies) are scheduled
+        here.  Events with dependencies are triggered automatically when their
+        parent completes via ``process_event()`` → ``get_successors()``.
+        """
+        completed_ids = {e.event_id for e in completed_events}
+
+        # Seed the event queue's dedup set so that already-completed events
+        # (e.g. ENV events that fired before the checkpoint) are not
+        # re-enqueued when a ConditionCheckEvent re-fires and returns them
+        # as successors.
+        env.event_queue.already_scheduled.update(completed_ids)
+
+        scheduled = 0
+
+        for event in scenario.events:
+            is_condition_check = isinstance(event, ConditionCheckEvent)
+
+            # ConditionCheckEvents are polling events that must be re-started
+            # even if a prior CHECK_N variant is in the completed event log.
+            # For all other event types, skip if already completed.
+            if not is_condition_check and event.event_id in completed_ids:
+                continue
+
+            # For ConditionCheckEvents, skip if ALL successors have already
+            # completed — the condition already fired and its effects are done.
+            if is_condition_check and event.successors:
+                all_successors_done = all(
+                    s.event_id in completed_ids for s in event.successors
+                )
+                if all_successors_done:
+                    self.logger.debug(
+                        f"Skipping ConditionCheckEvent {event.event_id}: "
+                        f"all successors already completed"
+                    )
+                    continue
+
+            # Only schedule root events (no unresolved dependencies).
+            if len(event.dependencies) == 0:
+                # Ensure the event has an absolute time before enqueueing.
+                # compute_absolute_time handles both cases: events with
+                # event_relative_time (time offset from start/dependency) and
+                # events without (defaults to start_time).
+                if event.event_time is None:
+                    event.compute_absolute_time(env.start_time)
+                env.event_queue.put(event)
+                scheduled += 1
+                self.logger.debug(
+                    f"Scheduled unfired event: {event.event_id} "
+                    f"(type={type(event).__name__}, time={event.event_time})"
+                )
+
+        if scheduled > 0:
+            self.logger.info(
+                f"Scheduled {scheduled} unfired scenario events for replay"
+            )
+        return scheduled
+
     def run(
         self,
         scenario: Scenario,
         config: Optional[ScenarioRunnerConfig] = None,
         enable_checkpoints: bool = True,
+        max_duration: Optional[int] = None,
     ) -> Tuple[ScenarioValidationResult, Path]:
         """
         Load checkpoint and continue execution.
@@ -569,7 +656,17 @@ class CheckpointReplayRunner:
         # Run scenario to set up apps, but do NOT re-schedule scenario events
         # (they are restored from the checkpoint's event_log to avoid duplication)
         env.run(scenario, wait_for_end=False, schedule_events=False)
-        
+
+        # Cap the simulation duration when a max_duration override is provided.
+        # This prevents the environment loop from running for the full scenario
+        # duration (e.g. 1800s) when replaying from a mid-task checkpoint.
+        if max_duration is not None:
+            env.duration = max_duration
+            self.logger.info(
+                f"Replay duration capped to {max_duration}s "
+                f"(scenario duration: {scenario.duration}s)"
+            )
+
         # Enable checkpointing after scenario setup
         if enable_checkpoints and self.checkpoint_manager and isinstance(env, CheckpointableEnvironment):
             env.enable_checkpointing(self.checkpoint_manager, scenario.scenario_id)
@@ -588,7 +685,12 @@ class CheckpointReplayRunner:
         # Restore apps state
         apps_data = checkpoint_data.get("apps", {})
         self._restore_apps_state(env, apps_data)
-        
+
+        # Schedule scenario events that haven't fired yet at checkpoint time.
+        # This is critical for adaptability tasks where ConditionCheckEvent
+        # triggers and their ENV event successors must fire during replay.
+        self._schedule_unfired_events(env, scenario, completed_events)
+
         # Set replaying to False before continuing execution
         env.is_replaying = False
         
@@ -923,21 +1025,23 @@ def replay_from_checkpoint(
     scenario: Scenario,
     config: Optional[ScenarioRunnerConfig] = None,
     verbose: bool = False,
+    max_duration: Optional[int] = None,
 ) -> Tuple[ScenarioValidationResult, Path]:
     """
     Convenience function to replay from a checkpoint.
-    
+
     Args:
         checkpoint_path: Path to checkpoint directory
         scenario: Scenario to continue
         config: Runner configuration. If None, will try to load from scenario_meta.json
         verbose: Enable detailed logging
-        
+        max_duration: Override max simulation duration for replay (seconds)
+
     Returns:
         Tuple of (validation result, output directory path)
     """
     runner = CheckpointReplayRunner(checkpoint_path, verbose=verbose)
-    return runner.run(scenario, config)
+    return runner.run(scenario, config, max_duration=max_duration)
 
 
 def list_checkpoints(checkpoint_dir: str) -> List[Dict[str, Any]]:
