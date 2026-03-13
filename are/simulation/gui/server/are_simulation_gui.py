@@ -788,6 +788,10 @@ class ARESimulationGui:
                 self._post_load(completed_events)
                 if len(world_logs) > 0:
                     self.play(world_logs)
+                    # Restore completed_events after play(), because env.run()
+                    # calls delete_all_completed_events() which clears them.
+                    if completed_events is not None:
+                        self.env.add_to_log(completed_events)
             else:
                 self._post_load()
 
