@@ -580,10 +580,21 @@ class SoftToolJudge(ToolJudge):
                 if k in self.checker_to_args_names[checker.value]
             }
             # Call the checker
-            if not checker_fn(
+            result = checker_fn(
                 agent_args=agent_args,
                 **_checker_kwargs,
-            ):
+            )
+            if result is None:
+                logger.warning(
+                    f"Soft checker '{checker.value}' returned None (inconclusive) "
+                    f"for tool '{self.tool_name}' — treating as FAIL"
+                )
+                return False
+            if not result:
+                logger.info(
+                    f"Soft checker '{checker.value}' returned False "
+                    f"for tool '{self.tool_name}'"
+                )
                 return False
         return True
 

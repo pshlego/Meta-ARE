@@ -6,6 +6,7 @@
 
 
 from abc import ABC, abstractmethod
+import logging
 from typing import Any, Callable
 
 from are.simulation.scenarios.utils.personalization.utils import jinja_format
@@ -25,6 +26,8 @@ from are.simulation.validation.prompts import (
     USER_MESSAGE_SUBTASK_EXTRACTOR_PROMPT_TEMPLATES,
     LLMFunctionTemplates,
 )
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 
 class LLMFunctionBase(ABC):
@@ -138,12 +141,23 @@ class LLMChecker(LLMFunctionBase):
             response = self.judge(user_prompt_args)
             # Parse the response
             if response is None:
+                logger.warning("LLMChecker: LLM returned None response")
                 continue
             if self.success_str in response:
                 votes.append(True)
             elif self.failure_str in response:
                 votes.append(False)
+            else:
+                logger.warning(
+                    f"LLMChecker: response did not contain "
+                    f"'{self.success_str}' or '{self.failure_str}'. "
+                    f"Response snippet: {response[:200]}"
+                )
         if len(votes) == 0:
+            logger.warning(
+                "LLMChecker: no valid votes after %d round(s) — returning None",
+                self.num_votes,
+            )
             return None
         return sum(votes) >= len(votes) / 2
 

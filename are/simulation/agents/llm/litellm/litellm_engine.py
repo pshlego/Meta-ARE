@@ -6,6 +6,7 @@
 
 
 import logging
+import re
 import time
 import traceback
 from typing import Any
@@ -156,7 +157,11 @@ Action:
             res = response.choices[0].message.content
             assert res is not None
 
-            res = res.replace("False", "false").replace("True", "true")
+            res = re.sub(
+                r'\[\[(True|False)\]\]|(True|False)',
+                lambda m: m.group(0) if m.group(1) else m.group(2).lower(),
+                res,
+            )
             for stop_token in stop_sequences:
                 res = res.split(stop_token)[0]
 
