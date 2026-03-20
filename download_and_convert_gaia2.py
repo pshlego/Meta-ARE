@@ -3,7 +3,7 @@ import os, json
 
 BASE = "/Data2/v-parksungho/Meta-ARE/datasets_local/gaia2"
 # configs = ["execution","search","adaptability","time","ambiguity"]
-configs = ["adaptability"]
+configs = ["time","ambiguity"]
 
 for cfg in configs:
     ds = load_dataset("meta-agents-research-environments/gaia2",

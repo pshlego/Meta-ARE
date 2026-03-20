@@ -16,9 +16,9 @@ from are.simulation.scenarios.utils.scenario_expander import EnvEventsConfig
 from are.simulation.types import ToolAugmentationConfig
 from are.simulation.utils import DEFAULT_APP_AGENT, DEFAULT_MODEL, DEFAULT_PROVIDER
 
-MAX_SCENARIO_DURATION = 1800  # 30 minutes
-MAX_TIME_SCENARIO_DURATION = 420  # 7 minutes
-DEFAULT_SCENARIO_TIMEOUT = 1860  # 31 minutes
+MAX_SCENARIO_DURATION = 7200  # 30 minutes
+MAX_TIME_SCENARIO_DURATION = 7200  # 7 minutes
+DEFAULT_SCENARIO_TIMEOUT = 7260  # 31 minutes
 
 
 class HuggingFaceConfig(BaseModel):
