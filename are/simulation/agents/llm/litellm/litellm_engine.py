@@ -36,6 +36,7 @@ class LiteLLMModelConfig(BaseModel):
     provider: str
     endpoint: str | None = None
     api_key: str | None = None
+    reasoning_effort: str | None = None  # "low", "medium", or "high"
 
 
 class LiteLLMEngine(LLMEngine):
@@ -127,6 +128,10 @@ Action:
 
             t0 = time.time()
 
+            optional_kwargs: dict[str, Any] = {}
+            if self.model_config.reasoning_effort is not None:
+                optional_kwargs["reasoning_effort"] = self.model_config.reasoning_effort
+
             if self.model_config.provider == "azure":
                 assert self._client is not None, "CloudGPT client not initialized."
                 response = completion(
@@ -137,6 +142,7 @@ Action:
                     api_version=self._api_version,
                     client=self._client,
                     mock_response=self.mock_response,
+                    **optional_kwargs,
                 )
             else:
                 response = completion(
@@ -146,6 +152,7 @@ Action:
                     api_base=self.model_config.endpoint,
                     api_key=self.model_config.api_key,
                     mock_response=self.mock_response,
+                    **optional_kwargs,
                 )
 
             completion_duration = time.time() - t0

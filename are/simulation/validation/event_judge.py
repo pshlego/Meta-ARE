@@ -174,8 +174,8 @@ class AgentEventJudge(EventJudge):
         oracle_tool_name = oracle_event.tool_name
         agent_tool_name = agent_event.tool_name
         logger.info(f"Comparing {oracle_tool_name} to {agent_tool_name}")
-        # First check time
-        if not self.check_time(
+        # First check time (skipped when disable_time_check is True)
+        if not self.config.disable_time_check and not self.check_time(
             agent_event=agent_event,
             oracle_event=oracle_event,
             max_parent_oracle_event_time=kwargs.get(

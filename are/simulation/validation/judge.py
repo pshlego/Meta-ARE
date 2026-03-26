@@ -254,6 +254,7 @@ class GraphPerEventJudge(BaseJudge):
                     check_time_threshold_seconds=self.config.check_time_threshold_seconds,
                     pre_event_tolerance_seconds=self.config.pre_event_tolerance_seconds,
                     post_event_tolerance_seconds=self.config.post_event_tolerance_seconds,
+                    disable_time_check=self.config.disable_time_check,
                     per_tool_arg_to_checker_type=self.config.per_tool_arg_to_checker_type,
                     per_tool_soft_checker_types=self.config.per_tool_soft_checker_types,
                     engine=self.config.engine,

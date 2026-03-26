@@ -224,6 +224,7 @@ class ScenarioRunner:
         simulated_generation_time_mode: str = "measured",
         use_custom_logger: bool = True,
         hints_file_path: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> ScenarioValidationResult:
         agent_config: RunnableARESimulationAgentConfig = (
             self.agent_config_builder.build(
@@ -236,7 +237,8 @@ class ScenarioRunner:
         # Set the use_custom_logger parameter in the base agent config
         agent_config.get_base_agent_config().use_custom_logger = use_custom_logger
         agent_config.get_base_agent_config().llm_engine_config = LLMEngineConfig(
-            model_name=model, provider=provider, endpoint=endpoint
+            model_name=model, provider=provider, endpoint=endpoint,
+            reasoning_effort=reasoning_effort,
         )
 
         # Create SimulatedGenerationTimeConfig from the mode
@@ -309,6 +311,7 @@ class ScenarioRunner:
                     config.simulated_generation_time_mode,
                     config.use_custom_logger,
                     config.hints_file_path,
+                    config.reasoning_effort,
                 )
         except Exception as exception:
             logger.exception(f"Failed to run agent: {exception}")

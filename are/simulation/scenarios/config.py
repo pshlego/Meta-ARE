@@ -111,6 +111,9 @@ class ScenarioRunnerConfig(BaseModel):
     # Judge engine configuration
     judge_engine_config: LLMEngineConfig | None = None
 
+    # Reasoning effort for the agent model ("low", "medium", "high", or None)
+    reasoning_effort: str | None = None
+
     # Max scenario duration in seconds
     max_scenario_duration: int = MAX_SCENARIO_DURATION
 

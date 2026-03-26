@@ -110,11 +110,11 @@ class CheckpointStorage:
     
     def get_scenario_dir(self, scenario_id: str) -> Path:
         """Get the directory path for a specific scenario's checkpoints."""
-        return self.base_dir
+        return self.base_dir / scenario_id
     
     def get_checkpoint_dir(self, scenario_id: str, checkpoint_id: str) -> Path:
         """Get the directory path for a specific checkpoint."""
-        return self.base_dir / checkpoint_id
+        return self.base_dir / scenario_id / checkpoint_id
     
     def save_checkpoint(self, scenario_id: str, checkpoint_id: str, 
                        checkpoint_data: Dict[str, Any]) -> bool:

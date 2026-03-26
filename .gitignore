@@ -192,3 +192,4 @@ benchmark_local_results/
 test_results
 train/
 gepa/
+eval_full_gaia2/

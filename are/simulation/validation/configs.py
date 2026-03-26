@@ -54,6 +54,7 @@ def create_judge_engine(
         model_name=judge_engine_config.model_name,
         provider=final_provider,
         endpoint=judge_engine_config.endpoint,
+        reasoning_effort=judge_engine_config.reasoning_effort,
     )
 
     return LiteLLMEngine(model_config=judge_config)
@@ -119,6 +120,8 @@ class AgentEventJudgeConfig(BaseEventJudgeConfig):
     check_time_threshold_seconds: float = 1.0
     pre_event_tolerance_seconds: float = 10.0
     post_event_tolerance_seconds: float = 25.0
+    # Set to True to skip check_time() enforcement (timing bypass for experiments)
+    disable_time_check: bool = False
     # Tool related config
     per_tool_arg_to_checker_type: ToolArgCheckerTypeRegistry = field(
         default_factory=lambda: TOOL_ARG_CHECKER_TYPE_REGISTRY
@@ -142,6 +145,8 @@ class GraphPerEventJudgeConfig(BaseJudgeConfig):
     check_time_threshold_seconds: float = 1.0
     pre_event_tolerance_seconds: float = 10.0
     post_event_tolerance_seconds: float = 25.0
+    # Set to True to skip check_time() enforcement (timing bypass for experiments)
+    disable_time_check: bool = False
     # Tool related config
     per_tool_arg_to_checker_type: ToolArgCheckerTypeRegistry = field(
         default_factory=lambda: TOOL_ARG_CHECKER_TYPE_REGISTRY
@@ -183,6 +188,8 @@ class InContextJudgeConfig(BaseJudgeConfig):
     check_time_threshold_seconds: float = 1.0
     pre_event_tolerance_seconds: float = 10.0
     post_event_tolerance_seconds: float = 25.0
+    # Set to True to skip check_time() enforcement (timing bypass for experiments)
+    disable_time_check: bool = False
     time_system_prompt_template: str = TIME_SYSTEM_PROMPT_TEMPLATE
     # Tool related config
     per_tool_evaluation_criteria: ToolCriteriaRegistry = field(

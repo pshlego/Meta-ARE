@@ -69,6 +69,10 @@ cloudgpt_available_models = Literal[
     "DeepSeek-V3.2", # ChatCompletions
     "DeepSeek-V3.2-Speciale", # ChatCompletions
     ##########################################################################
+    # Meta Llama Models
+    ##########################################################################
+    "Llama-3.3-70B-Instruct", # ChatCompletions
+    ##########################################################################
     # Moonshot Models
     ##########################################################################
     "Kimi-K2-Thinking", # ChatCompletions

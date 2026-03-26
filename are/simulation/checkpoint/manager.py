@@ -120,8 +120,10 @@ class CheckpointManager:
             if self._scenario_source_type:
                 scenario_meta["scenario_source_type"] = self._scenario_source_type
             
-            # Save to scenario_meta.json in checkpoint_dir
-            meta_file = self.config.checkpoint_dir / "scenario_meta.json"
+            # Save to scenario_meta.json in per-scenario subdirectory
+            scenario_dir = self.config.checkpoint_dir / scenario_id
+            scenario_dir.mkdir(parents=True, exist_ok=True)
+            meta_file = scenario_dir / "scenario_meta.json"
             with open(meta_file, 'w', encoding='utf-8') as f:
                 json.dump(scenario_meta, f, indent=2, ensure_ascii=False, cls=CheckpointJSONEncoder)
             

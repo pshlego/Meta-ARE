@@ -21,6 +21,7 @@ class LLMEngineConfig(BaseModel):
     )
     provider: str | None = None
     endpoint: str | None = None
+    reasoning_effort: str | None = None  # "low", "medium", or "high"
 
 
 class ARESimulationBaseAgentConfig(BaseModel):

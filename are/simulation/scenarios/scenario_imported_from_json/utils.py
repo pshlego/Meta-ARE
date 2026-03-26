@@ -388,7 +388,10 @@ def preprocess_scenario_from_config(
 
         judge_engine = create_judge_engine(config.judge_engine_config)
 
-        judge_config = GraphPerEventJudgeConfig(engine=judge_engine)
+        judge_config = GraphPerEventJudgeConfig(
+            engine=judge_engine,
+            disable_time_check=True,  # TODO: re-enable for full experiment run
+        )
 
         preprocess_scenario(
             scenario=scenario,

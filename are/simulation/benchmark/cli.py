@@ -334,6 +334,12 @@ def validate_benchmark_scenario_sources(**scenario_params):
     help="Number of times to run each scenario to improve variance. Defaults to 3.",
 )
 @click.option(
+    "--reasoning_effort",
+    type=click.Choice(["minimal", "low", "medium", "high"]),
+    default=None,
+    help="Reasoning effort level for the agent model (e.g., 'low', 'medium', 'high'). Only applicable to reasoning-capable models.",
+)
+@click.option(
     "--judge_model",
     type=str,
     default=DEFAULT_JUDGE_MODEL,
@@ -389,6 +395,7 @@ def main(
     a2a_model_provider: str | None = None,
     a2a_endpoint: str | None = None,
     num_runs: int = 3,
+    reasoning_effort: str | None = None,
     judge_model: str = DEFAULT_JUDGE_MODEL,
     judge_provider: str | None = None,
     judge_endpoint: str | None = None,
@@ -610,6 +617,7 @@ def main(
                 judge_model=judge_model,
                 judge_provider=judge_provider,
                 judge_endpoint=judge_endpoint,
+                reasoning_effort=reasoning_effort,
                 log_level=log_level,  # Pass log level to run_dataset
                 enable_checkpoints=enable_checkpoints,
                 checkpoint_verbose=checkpoint_verbose,
