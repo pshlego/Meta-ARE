@@ -134,33 +134,31 @@ class SandboxLocalFileSystem(App, AbstractFileSystem, metaclass=FinalMeta):
     def get_state(self) -> dict[str, Any]:
         with EventRegisterer.disable():
 
-            def build_tree(path: str = "/") -> dict[str, Any]:
-                # For the root path, use empty name
-                if path == "/":
+            def build_tree(abs_path: str) -> dict[str, Any]:
+                # For the root (tmpdir itself), use empty name
+                if abs_path == self.tmpdir or abs_path == self.tmpdir.rstrip("/"):
                     name = ""
                 else:
-                    name = os.path.basename(path)
+                    name = os.path.basename(abs_path)
 
-                # Use the SandboxFileSystem API to check if it's a directory
-                path_info = self.info(path)
-                is_directory = path_info["type"] == "directory"
-
-                if is_directory:
+                # Use direct os calls to avoid triggering fallback stats
+                # loading from remote filesystems (e.g. HuggingFace).
+                # get_state() only needs names and types, not sizes/modes.
+                if os.path.isdir(abs_path):
                     children = []
-                    # Use the SandboxFileSystem API to list directory contents
-                    items = self.ls(path, detail=True)
-
-                    for item in items:
-                        # Get the path relative to the sandbox root
-                        item_path = item["name"]
-                        children.append(build_tree(item_path))
-
+                    try:
+                        entries = sorted(os.listdir(abs_path))
+                    except OSError:
+                        entries = []
+                    for entry in entries:
+                        child_abs = os.path.join(abs_path, entry)
+                        children.append(build_tree(child_abs))
                     return {"name": name, "type": "directory", "children": children}
                 else:
                     return {"name": name, "type": "file"}
 
             # Only include the files structure, not the tmpdir
-            return {"files": build_tree("/"), "tmpdir": self.tmpdir}
+            return {"files": build_tree(self.tmpdir), "tmpdir": self.tmpdir}
 
     def load_state(self, state_dict: dict[str, Any]):
         with EventRegisterer.disable():

@@ -23,7 +23,13 @@ from are.simulation.scenarios.scenario_imported_from_json.benchmark_scenario imp
 from are.simulation.scenarios.scenario_imported_from_json.scenario import (
     ScenarioImportedFromJson,
 )
-from are.simulation.types import CapabilityTag, CompletedEvent, Hint, HintType
+from are.simulation.types import (
+    CapabilityTag,
+    CompletedEvent,
+    ExecutionMetadata,
+    Hint,
+    HintType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +229,17 @@ class JsonScenarioImporter:
 
         if scenario_metadata.execution is not None:
             scenario.execution_metadata = scenario_metadata.execution.to_metadata()
+        else:
+            # If execution metadata is missing but there are CONDITION events,
+            # provide a default empty ExecutionMetadata so the scenario can initialize.
+            has_condition_events = any(
+                e.event_type == "CONDITION" for e in events
+            )
+            if has_condition_events:
+                scenario.execution_metadata = ExecutionMetadata(
+                    has_placeholder_conflicts=False,
+                    placeholders=[],
+                )
 
         scenario.serialized_apps = data.apps
         scenario.apps_to_skip = apps_to_skip

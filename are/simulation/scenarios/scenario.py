@@ -587,6 +587,14 @@ class Scenario(metaclass=AutoDataclass):
         if not SPECIAL_RULE_FOR_SEND_MESSAGE_EVENTS:
             return
 
+        # In multi-turn scenarios (those containing CONDITION events),
+        # each turn legitimately has its own AUI events. Skip the
+        # single-branch check when CONDITION events are present.
+        if any(
+            isinstance(event, ConditionCheckEvent) for event in events
+        ):
+            return
+
         # All the AUI events should be in a single branch of the events graph
         if (
             function_name == "send_message_to_agent"
@@ -913,9 +921,35 @@ class Scenario(metaclass=AutoDataclass):
         graph = defaultdict(list)
         in_degree = defaultdict(int)
 
+        # Build a set of all event IDs that actually exist
+        all_event_ids = {event.event_id for event in events}
+
+        # Build a mapping from condition base IDs (without CHECK_N suffix)
+        # to their actual event IDs. During runtime, ConditionCheckEvent
+        # increments _internal_check_count which changes the ID from e.g.
+        # "condition_turn_1-CHECK_0" to "condition_turn_1-CHECK_649".
+        # Dependent events may reference the runtime ID, so we need to
+        # normalize them back to the exported base ID.
+        condition_base_to_id: dict[str, str] = {}
+        for event in events:
+            if event.event_type == "CONDITION":
+                base_id = re.sub(r"-CHECK_\d+$", "", event.event_id)
+                condition_base_to_id[base_id] = event.event_id
+
+        def _normalize_dep(dep: str) -> str:
+            """Normalize a dependency ID, resolving runtime condition IDs."""
+            if dep in all_event_ids:
+                return dep
+            base = re.sub(r"-CHECK_\d+$", "", dep)
+            if base in condition_base_to_id:
+                return condition_base_to_id[base]
+            return dep
+
         for event in events:
             event_id = event.event_id
-            dependencies = event.dependencies
+            dependencies = [_normalize_dep(d) for d in event.dependencies]
+            # Update the event's dependencies with normalized values
+            event.dependencies = dependencies
             in_degree[event_id] = in_degree.get(event_id, 0)
 
             for dep in dependencies:
