@@ -23,10 +23,12 @@ class HookHandler:
     Supported types:
     - "prompt": Single LLM call with a rendered prompt template
     - "agent": GC-SDK agentic session with tool access for deep validation
+    - "reminder": Static hint injected once per tool name (no LLM call)
     """
 
-    type: Literal["prompt", "agent"]
-    prompt: str
+    type: Literal["prompt", "agent", "reminder"]
+    prompt: str = ""
+    reminder: str = ""
     timeout: int = 7200
 
 
@@ -62,19 +64,33 @@ class HookConfig:
             handlers: list[HookHandler] = []
             for h in matcher_group.get("hooks", []):
                 handler_type = h.get("type")
-                if handler_type not in ("prompt", "agent"):
+                if handler_type not in ("prompt", "agent", "reminder"):
                     logger.warning(
                         f"Skipping unsupported hook handler type: {handler_type!r}. "
-                        f"Only 'prompt' and 'agent' types are supported."
+                        f"Only 'prompt', 'agent', and 'reminder' types are supported."
                     )
                     continue
-                handlers.append(
-                    HookHandler(
-                        type=handler_type,
-                        prompt=h["prompt"],
-                        timeout=h.get("timeout", 7200),
+                if handler_type == "reminder":
+                    reminder_text = h.get("reminder", "")
+                    if not reminder_text:
+                        logger.warning(
+                            "Skipping reminder hook with empty 'reminder' field."
+                        )
+                        continue
+                    handlers.append(
+                        HookHandler(
+                            type="reminder",
+                            reminder=reminder_text,
+                        )
                     )
-                )
+                else:
+                    handlers.append(
+                        HookHandler(
+                            type=handler_type,
+                            prompt=h["prompt"],
+                            timeout=h.get("timeout", 7200),
+                        )
+                    )
             if handlers:
                 config.pre_tool_use.append(
                     HookMatcherGroup(

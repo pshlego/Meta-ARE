@@ -28,6 +28,8 @@ class HookMiddleware:
         self.llm_engine = llm_engine
         # workspace_path is used as cwd for agent-type hooks (GC-SDK sessions)
         self.workspace_path = workspace_path
+        # Tracks tool names that have already received a reminder (fire-once-per-tool-name)
+        self._fired_reminders: set[str] = set()
 
     def evaluate_pre_tool_use(self, hook_input: PreToolUseHookInput) -> HookDecision:
         """
@@ -51,52 +53,71 @@ class HookMiddleware:
             )
 
             for handler in matcher_group.hooks:
-                if handler.type not in ("prompt", "agent"):
+                if handler.type == "reminder":
+                    # Reminder hooks: block once per tool name, then auto-allow
+                    if hook_input.tool_name not in self._fired_reminders:
+                        self._fired_reminders.add(hook_input.tool_name)
+                        logger.info(
+                            f"[Hook] Reminder fired for tool '{hook_input.tool_name}' "
+                            f"(first call — blocking and injecting hint)"
+                        )
+                        decision = HookDecision(
+                            permission_decision="deny",
+                            permission_decision_reason=handler.reminder,
+                            system_message=handler.reminder,
+                        )
+                    else:
+                        logger.info(
+                            f"[Hook] Reminder already fired for tool '{hook_input.tool_name}' "
+                            f"(subsequent call — auto-allowing)"
+                        )
+                        continue  # Skip this handler, check next
+                elif handler.type not in ("prompt", "agent"):
                     continue
+                else:
+                    # Render prompt template with runtime values
+                    rendered_prompt = hook_input.render_template(handler.prompt)
 
-                # Render prompt template with runtime values
-                rendered_prompt = hook_input.render_template(handler.prompt)
-
-                # Log the rendered prompt
-                logger.info(
-                    f"[Hook] Rendered prompt for tool '{hook_input.tool_name}' "
-                    f"(type={handler.type}):\n"
-                    f"{'=' * 60}\n{rendered_prompt}\n{'=' * 60}"
-                )
-
-                # Dispatch to the appropriate evaluator
-                if handler.type == "prompt":
+                    # Log the rendered prompt
                     logger.info(
-                        f"[Hook] Sending prompt to LLM for evaluation "
-                        f"(tool={hook_input.tool_name})"
+                        f"[Hook] Rendered prompt for tool '{hook_input.tool_name}' "
+                        f"(type={handler.type}):\n"
+                        f"{'=' * 60}\n{rendered_prompt}\n{'=' * 60}"
                     )
-                    raw_response = self._call_llm(rendered_prompt)
-                elif handler.type == "agent":
+
+                    # Dispatch to the appropriate evaluator
+                    if handler.type == "prompt":
+                        logger.info(
+                            f"[Hook] Sending prompt to LLM for evaluation "
+                            f"(tool={hook_input.tool_name})"
+                        )
+                        raw_response = self._call_llm(rendered_prompt)
+                    elif handler.type == "agent":
+                        logger.info(
+                            f"[Hook] Spawning GC-SDK agent session for evaluation "
+                            f"(tool={hook_input.tool_name})"
+                        )
+                        raw_response = self._call_gc_sdk_agent(
+                            rendered_prompt, timeout=handler.timeout
+                        )
+
+                    decision = HookDecision.from_llm_response(raw_response)
+
+                    # Log the raw response
                     logger.info(
-                        f"[Hook] Spawning GC-SDK agent session for evaluation "
-                        f"(tool={hook_input.tool_name})"
-                    )
-                    raw_response = self._call_gc_sdk_agent(
-                        rendered_prompt, timeout=handler.timeout
+                        f"[Hook] Raw {handler.type} response for tool "
+                        f"'{hook_input.tool_name}':\n"
+                        f"{'=' * 60}\n{raw_response}\n{'=' * 60}"
                     )
 
-                decision = HookDecision.from_llm_response(raw_response)
-
-                # Log the raw response
-                logger.info(
-                    f"[Hook] Raw {handler.type} response for tool "
-                    f"'{hook_input.tool_name}':\n"
-                    f"{'=' * 60}\n{raw_response}\n{'=' * 60}"
-                )
-
-                logger.info(
-                    f"[Hook] LLM decision: {decision.permission_decision}"
-                    + (
-                        f" — reason: {decision.permission_decision_reason[:200]}"
-                        if decision.is_denied
-                        else ""
+                    logger.info(
+                        f"[Hook] LLM decision: {decision.permission_decision}"
+                        + (
+                            f" — reason: {decision.permission_decision_reason[:200]}"
+                            if decision.is_denied
+                            else ""
+                        )
                     )
-                )
 
                 # Priority: deny > allow
                 if decision.is_denied:
