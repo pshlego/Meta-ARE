@@ -259,6 +259,8 @@ class ScenarioRunner:
 
         # Set up hook middleware if configured
         if hook_config_path is not None:
+            from pathlib import Path
+
             from are.simulation.agents.hooks.config import HookConfig
             from are.simulation.agents.hooks.middleware import HookMiddleware
 
@@ -267,6 +269,7 @@ class ScenarioRunner:
                 hook_middleware = HookMiddleware(
                     config=hook_config,
                     llm_engine=are_simulation_agent.llm_engine,
+                    workspace_path=str(Path(__file__).resolve().parents[2]),
                 )
                 are_simulation_agent.react_agent.hook_middleware = hook_middleware
                 logger.info(
