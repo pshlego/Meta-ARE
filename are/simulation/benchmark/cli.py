@@ -271,6 +271,13 @@ def validate_benchmark_scenario_sources(**scenario_params):
     help="JSON file mapping scenario_id to hint text for system prompt injection.",
 )
 @click.option(
+    "--hook-config",
+    type=click.Path(exists=True, dir_okay=False, path_type=str),
+    required=False,
+    default=None,
+    help="Path to hook.json file for PreToolUse prompt hooks.",
+)
+@click.option(
     "--trace_dump_format",
     default="both",
     type=click.Choice(["hf", "lite", "both"]),
@@ -404,6 +411,8 @@ def main(
     checkpoint_verbose: bool = False,
     # Hints file
     hints_file: str | None = None,
+    # Hook config
+    hook_config: str | None = None,
     **kwargs,
 ):
     """
@@ -622,6 +631,7 @@ def main(
                 enable_checkpoints=enable_checkpoints,
                 checkpoint_verbose=checkpoint_verbose,
                 hints_file_path=hints_file,
+                hook_config_path=hook_config,
                 **run_dataset_kwargs,
             )
             results[config] = result

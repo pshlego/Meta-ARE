@@ -147,6 +147,7 @@ def _create_scenario_runner_config(
         env_events_config=config.env_events_config,
         judge_engine_config=config.judge_engine_config,
         hints_file_path=config.hints_file_path,
+        hook_config_path=config.hook_config_path,
     )
     if scenario.nb_turns is not None:
         runner_config.max_turns = scenario.nb_turns

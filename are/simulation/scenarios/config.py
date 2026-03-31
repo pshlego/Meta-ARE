@@ -126,6 +126,9 @@ class ScenarioRunnerConfig(BaseModel):
     # Path to a JSON hints file mapping scenario_id -> hint text for system prompt injection
     hints_file_path: str | None = None
 
+    # Path to a hook.json file for PreToolUse prompt hooks
+    hook_config_path: str | None = None
+
     def get_config_hash(self) -> str:
         """
         Generate a hash of the relevant config parameters that affect scenario execution.

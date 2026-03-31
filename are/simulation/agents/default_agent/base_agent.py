@@ -20,15 +20,18 @@ from typing import Callable, Sequence, Type, TypeVar, Union
 from are.simulation.agents.agent_log import (
     BaseAgentLog,
     ErrorLog,
+    HintLog,
     LLMInputLog,
     LLMOutputThoughtActionLog,
     ObservationLog,
+    RationaleLog,
     StepLog,
     StopLog,
     SubagentLog,
     SystemPromptLog,
     TaskLog,
     ThoughtLog,
+    ToolCallLog,
 )
 from are.simulation.agents.are_simulation_agent import AgentStoppedException
 from are.simulation.agents.decoding_types import DecodingSchema
@@ -389,6 +392,9 @@ class BaseAgent:
 
         self.handle_prompt_too_long = handle_prompt_too_long
 
+        # Hook middleware for PreToolUse hooks (set externally if configured)
+        self.hook_middleware = None
+
         # Create Agent hex ID for logging
         self.agent_id = str(uuid.uuid4().hex)
 
@@ -739,6 +745,31 @@ class BaseAgent:
         if agent_action.action is not None:
             # Parse the action
             parsed_action = self.action_executor.parse_action(agent_action)
+
+            # --- PreToolUse Hook Interception ---
+            if self.hook_middleware is not None and parsed_action.tool_name:
+                hook_decision = self._evaluate_pre_tool_use_hook(
+                    parsed_action, agent_action.rationale or ""
+                )
+                if hook_decision.is_denied:
+                    # Inject feedback as a hint and skip tool execution
+                    hint_text = hook_decision.to_hint_text()
+                    self.logger.info(
+                        f"[Hook] Tool call '{parsed_action.tool_name}' denied. "
+                        f"Injecting hint feedback."
+                    )
+                    self.append_agent_log(
+                        HintLog(
+                            content=(
+                                f"[HOOK FEEDBACK - Tool call '{parsed_action.tool_name}' was BLOCKED]\n"
+                                f"{hint_text}"
+                            ),
+                            timestamp=self.make_timestamp(),
+                            agent_id=self.agent_id,
+                        )
+                    )
+                    return  # Skip tool execution, agent continues with the hint
+
             self.action_executor.execute_parsed_action(
                 parsed_action,
                 self.append_agent_log,
@@ -747,6 +778,69 @@ class BaseAgent:
             )
         else:
             self.logger.warning(f"No action found in LLM output {llm_output}")
+
+    def _evaluate_pre_tool_use_hook(
+        self, parsed_action: ParsedAction, agent_thought: str
+    ):
+        """Evaluate PreToolUse hooks for the given parsed action."""
+        from are.simulation.agents.hooks.types import PreToolUseHookInput
+
+        # Build execution trace from logs
+        execution_trace = self._build_execution_trace()
+
+        # Extract task description from logs
+        task_description = self.task or ""
+
+        # Build tool input
+        tool_input = {}
+        if parsed_action.arguments:
+            if isinstance(parsed_action.arguments, dict):
+                tool_input = parsed_action.arguments
+            else:
+                tool_input = {"raw": str(parsed_action.arguments)}
+
+        hook_input = PreToolUseHookInput(
+            tool_name=parsed_action.tool_name or "",
+            tool_input=tool_input,
+            execution_trace=execution_trace,
+            agent_thought=agent_thought,
+            task_description=task_description,
+        )
+
+        return self.hook_middleware.evaluate_pre_tool_use(hook_input)
+
+    def _build_execution_trace(self) -> str:
+        """Build a text representation of the agent's execution trace from logs."""
+        trace_parts = []
+        step_num = 0
+        for log in self.logs:
+            if isinstance(log, TaskLog):
+                trace_parts.append(f"[TASK]: {log.content}")
+            elif isinstance(log, ThoughtLog) and log.content:
+                trace_parts.append(f"[THOUGHT]: {log.content}")
+            elif isinstance(log, RationaleLog):
+                trace_parts.append(f"[RATIONALE]: {log.content}")
+            elif isinstance(log, ToolCallLog):
+                step_num += 1
+                args_str = (
+                    log.tool_arguments
+                    if isinstance(log.tool_arguments, str)
+                    else str(log.tool_arguments)
+                )
+                trace_parts.append(
+                    f"[TOOL CALL {step_num}]: {log.tool_name}({args_str})"
+                )
+            elif isinstance(log, ObservationLog):
+                # Truncate long observations to avoid prompt overflow
+                content = log.content
+                if len(content) > 2000:
+                    content = content[:1000] + "\n[...truncated...]\n" + content[-1000:]
+                trace_parts.append(f"[OBSERVATION {step_num}]: {content}")
+            elif isinstance(log, ErrorLog):
+                trace_parts.append(f"[ERROR]: {log.error}: {log.exception}")
+            elif isinstance(log, HintLog):
+                trace_parts.append(f"[HINT]: {log.content}")
+        return "\n".join(trace_parts)
 
     def get_agent_logs(self) -> list[BaseAgentLog]:
         return self.logs.copy()

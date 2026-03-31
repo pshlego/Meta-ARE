@@ -225,6 +225,7 @@ class ScenarioRunner:
         use_custom_logger: bool = True,
         hints_file_path: str | None = None,
         reasoning_effort: str | None = None,
+        hook_config_path: str | None = None,
     ) -> ScenarioValidationResult:
         agent_config: RunnableARESimulationAgentConfig = (
             self.agent_config_builder.build(
@@ -255,6 +256,24 @@ class ScenarioRunner:
         are_simulation_agent: RunnableARESimulationAgent = self.agent_builder.build(
             agent_config=agent_config, env=env
         )
+
+        # Set up hook middleware if configured
+        if hook_config_path is not None:
+            from are.simulation.agents.hooks.config import HookConfig
+            from are.simulation.agents.hooks.middleware import HookMiddleware
+
+            hook_config = HookConfig.from_json(hook_config_path)
+            if hook_config.has_pre_tool_use_hooks:
+                hook_middleware = HookMiddleware(
+                    config=hook_config,
+                    llm_engine=are_simulation_agent.llm_engine,
+                )
+                are_simulation_agent.react_agent.hook_middleware = hook_middleware
+                logger.info(
+                    f"[Hook] Loaded {len(hook_config.pre_tool_use)} PreToolUse hook matcher group(s) "
+                    f"from {hook_config_path}"
+                )
+
         logger.info(f"Running with Agent {agent}")
         result = are_simulation_agent.run_scenario(
             scenario=scenario, notification_system=env.notification_system
@@ -312,6 +331,7 @@ class ScenarioRunner:
                     config.use_custom_logger,
                     config.hints_file_path,
                     config.reasoning_effort,
+                    config.hook_config_path,
                 )
         except Exception as exception:
             logger.exception(f"Failed to run agent: {exception}")

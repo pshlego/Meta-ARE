@@ -232,6 +232,7 @@ def run_dataset(
     enable_checkpoints: bool = False,
     checkpoint_verbose: bool = False,
     hints_file_path: str | None = None,
+    hook_config_path: str | None = None,
     **kwargs,
 ) -> MultiScenarioValidationResult:
     """Run a dataset of scenarios with the specified configuration.
@@ -334,6 +335,7 @@ def run_dataset(
         log_level=log_level,
         checkpoint_config=checkpoint_config,
         hints_file_path=hints_file_path,
+        hook_config_path=hook_config_path,
     )
 
     # Set base metadata on all scenarios
