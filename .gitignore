@@ -200,3 +200,5 @@ empirical_case_study/
 eval_hook_test/
 eval_hook_experiment/
 hooks/
+scripts/
+reminder/
