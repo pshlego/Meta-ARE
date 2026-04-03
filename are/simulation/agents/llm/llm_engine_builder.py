@@ -61,6 +61,9 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
         if engine_config.provider == "azure":
             return self._create_azure_engine(engine_config)
 
+        if engine_config.provider == "copilot":
+            return self._create_copilot_engine(engine_config)
+
         if engine_config.provider in ["local", "mock"]:
             return self._create_local_engine(engine_config)
 
@@ -130,6 +133,25 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
             provider="azure",
             # endpoint=endpoint,
             # api_key=key,
+        )
+        return LiteLLMEngine(model_config=model_config)
+
+    def _create_copilot_engine(self, engine_config: LLMEngineConfig) -> LLMEngine:
+        """
+        Create an LLM engine for the copilot provider.
+        Uses a local OpenAI-compatible endpoint at localhost:4141.
+        """
+        from are.simulation.agents.llm.litellm.litellm_engine import (
+            LiteLLMEngine,
+            LiteLLMModelConfig,
+        )
+
+        endpoint = os.environ.get("COPILOT_API_BASE", "http://localhost:4141/v1")
+        model_config = LiteLLMModelConfig(
+            model_name=engine_config.model_name,
+            provider="copilot",
+            endpoint=endpoint,
+            api_key="EMPTY",
         )
         return LiteLLMEngine(model_config=model_config)
 

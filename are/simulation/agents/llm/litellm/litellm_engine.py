@@ -72,6 +72,15 @@ Action:
                 base_url=self._base_url,
                 api_version=self._api_version,
                 azure_ad_token_provider=token_provider
+            )
+        elif self.model_config.provider == "copilot":
+            from openai import OpenAI
+
+            copilot_base = model_config.endpoint or "http://localhost:4141/v1"
+            self._base_url = copilot_base
+            self._client = OpenAI(
+                base_url=copilot_base,
+                api_key=model_config.api_key or "EMPTY",
             )            
 
     def _convert_message_to_litellm_format(
@@ -140,6 +149,18 @@ Action:
                     messages=converted_messages,
                     api_base=self._base_url,
                     api_version=self._api_version,
+                    client=self._client,
+                    mock_response=self.mock_response,
+                    **optional_kwargs,
+                )
+            elif self.model_config.provider == "copilot":
+                assert self._client is not None, "Copilot client not initialized."
+                response = completion(
+                    model=self.model_config.model_name,
+                    custom_llm_provider="openai",
+                    messages=converted_messages,
+                    api_base=self._base_url,
+                    api_key=self.model_config.api_key or "EMPTY",
                     client=self._client,
                     mock_response=self.mock_response,
                     **optional_kwargs,
