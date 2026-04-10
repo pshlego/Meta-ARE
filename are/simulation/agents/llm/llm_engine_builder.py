@@ -146,7 +146,7 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
             LiteLLMModelConfig,
         )
 
-        endpoint = os.environ.get("COPILOT_API_BASE", "http://localhost:4141/v1")
+        endpoint = engine_config.endpoint or os.environ.get("COPILOT_API_BASE", "http://localhost:4141/v1")
         model_config = LiteLLMModelConfig(
             model_name=engine_config.model_name,
             provider="copilot",
