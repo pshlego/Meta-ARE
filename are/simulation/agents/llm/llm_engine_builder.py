@@ -58,8 +58,8 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
         if engine_config.provider in ["llama-api"]:
             return self._create_llama_api_engine(engine_config)
 
-        if engine_config.provider == "azure":
-            return self._create_azure_engine(engine_config)
+        if engine_config.provider in ["openai"]:
+            return self._create_openai_engine(engine_config)
 
         if engine_config.provider == "copilot":
             return self._create_copilot_engine(engine_config)
@@ -117,22 +117,23 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
         )
         return LiteLLMEngine(model_config=model_config)
 
-    def _create_azure_engine(self, engine_config: LLMEngineConfig) -> LLMEngine:
+    def _create_openai_engine(self, engine_config: LLMEngineConfig) -> LLMEngine:
         """
-        Create an LLM engine for the azure provider.
-        :param engine_config: Configuration for the engine.
-        :returns: An instance of the LLM engine.
+        Create an LLM engine for the OpenAI-compatible provider.
+        Uses OPENAI_API_KEY env var for authentication.
         """
         from are.simulation.agents.llm.litellm.litellm_engine import (
             LiteLLMEngine,
             LiteLLMModelConfig,
         )
 
+        endpoint = engine_config.endpoint or os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
+        api_key = os.environ.get("OPENAI_API_KEY", "")
         model_config = LiteLLMModelConfig(
             model_name=engine_config.model_name,
-            provider="azure",
-            # endpoint=endpoint,
-            # api_key=key,
+            provider="openai",
+            endpoint=endpoint,
+            api_key=api_key,
         )
         return LiteLLMEngine(model_config=model_config)
 

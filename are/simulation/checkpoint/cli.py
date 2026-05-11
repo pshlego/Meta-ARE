@@ -480,7 +480,7 @@ def _load_benchmark_scenario_from_file(
     if config is None:
         config = ScenarioRunnerConfig(
             model="unknown",
-            model_provider="azure",
+            model_provider="openai",
             agent="default",
         )
     
@@ -489,7 +489,7 @@ def _load_benchmark_scenario_from_file(
     if judge_model is not None:
         config.judge_engine_config = LLMEngineConfig(
             model_name=judge_model,
-            provider=judge_provider or "azure",
+            provider=judge_provider or "openai",
         )
     elif config.judge_engine_config is None:
         # Try to get from metadata runner_config
@@ -500,7 +500,7 @@ def _load_benchmark_scenario_from_file(
             if jec and isinstance(jec, dict):
                 config.judge_engine_config = LLMEngineConfig(
                     model_name=jec.get("model_name", ""),
-                    provider=jec.get("provider", "azure"),
+                    provider=jec.get("provider", "openai"),
                     endpoint=jec.get("endpoint"),
                 )
     
@@ -551,7 +551,7 @@ def _prepare_config_for_replay(
         
         config = ScenarioRunnerConfig(
             model=model,
-            model_provider=provider or "azure",
+            model_provider=provider or "openai",
             agent=agent,
             max_turns=max_turns or 10,
             export=export if export is not None else True,
@@ -576,7 +576,7 @@ def _prepare_config_for_replay(
     if judge_model is not None:
         config.judge_engine_config = LLMEngineConfig(
             model_name=judge_model,
-            provider=judge_provider or "azure",
+            provider=judge_provider or "openai",
         )
     
     return config

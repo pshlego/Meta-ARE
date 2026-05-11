@@ -208,3 +208,13 @@ gepa_baseline_b10/
 eval_default_baseline/
 eval_gepa_cand3/
 eval_meta_harness_iter10_lean_rules/
+eval_gepa_cand3_2nd/
+eval_gepa_cand3_3rd/
+eval_gepa_cand3_exception_rerun/
+eval_meta_harness_iter10_lean_rules_2nd/
+eval_meta_harness_iter10_lean_rules_3rd/
+gepa_baseline_batch_fix/
+ablationA/
+ablationB/
+ablationC/
+eval_ablationC_iter31/

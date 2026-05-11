@@ -6,6 +6,7 @@
 
 
 import logging
+import os
 import re
 import time
 import traceback
@@ -22,8 +23,7 @@ from are.simulation.agents.llm.llm_engine import LLMEngine, LLMEngineException
 from are.simulation.agents.llm.types import MessageRole
 from are.simulation.agents.multimodal import Attachment
 
-from are.simulation.agents.llm.litellm.cloudgpt_aoai import get_openai_token_provider
-from openai import AzureOpenAI
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -61,22 +61,16 @@ Action:
 }<end_action>
 """
         self._client = None
-        if self.model_config.provider == "azure":
-            token_provider = get_openai_token_provider(use_azure_cli=True)
-            token_provider()
-
-            self._api_version = "2025-04-01-preview"
-            self._base_url = "https://cloudgpt-openai.azure-api.net/openai/"
-
-            self._client = AzureOpenAI(
-                base_url=self._base_url,
-                api_version=self._api_version,
-                azure_ad_token_provider=token_provider
+        if self.model_config.provider in ["openai"]:
+            # Standard OpenAI API
+            openai_base = model_config.endpoint or "https://api.openai.com/v1"
+            self._base_url = openai_base
+            self._client = OpenAI(
+                base_url=openai_base,
+                api_key=model_config.api_key or "",
             )
         elif self.model_config.provider == "copilot":
-            from openai import OpenAI
-
-            copilot_base = model_config.endpoint or "http://localhost:4141/v1"
+            copilot_base = model_config.endpoint or os.environ.get("COPILOT_API_BASE", "http://localhost:4141/v1")
             self._base_url = copilot_base
             self._client = OpenAI(
                 base_url=copilot_base,
@@ -141,15 +135,11 @@ Action:
             if self.model_config.reasoning_effort is not None:
                 optional_kwargs["reasoning_effort"] = self.model_config.reasoning_effort
 
-            if self.model_config.provider == "azure":
-                assert self._client is not None, "CloudGPT client not initialized."
+            if self.model_config.provider in ["openai"]:
                 response = completion(
-                    model=self.model_config.model_name,
-                    custom_llm_provider=provider,
+                    model=f"openai/{self.model_config.model_name}",
                     messages=converted_messages,
-                    api_base=self._base_url,
-                    api_version=self._api_version,
-                    client=self._client,
+                    api_key=self.model_config.api_key or os.environ.get("OPENAI_API_KEY", ""),
                     mock_response=self.mock_response,
                     **optional_kwargs,
                 )
