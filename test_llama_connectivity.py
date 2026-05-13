@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal test to verify Llama-3.3-70B-Instruct connectivity via CloudGPT."""
+"""Minimal test to verify Llama-3.3-70B-Instruct connectivity via OpenAI API."""
 
 import sys
 sys.path.insert(0, "/Data2/v-parksungho/Meta-ARE")
@@ -7,7 +7,7 @@ sys.path.insert(0, "/Data2/v-parksungho/Meta-ARE")
 from are.simulation.agents.llm.litellm.litellm_engine import LiteLLMEngine, LiteLLMModelConfig
 
 MODEL_NAME = "Llama-3.3-70B-Instruct"
-PROVIDER = "azure"
+PROVIDER = "openai"
 
 print(f"Testing model: {MODEL_NAME} via provider: {PROVIDER}")
 print("=" * 60)

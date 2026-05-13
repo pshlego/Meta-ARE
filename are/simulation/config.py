@@ -31,7 +31,6 @@ ARE_SIMULATION_SANDBOX_PATH: str = tempfile.mkdtemp(prefix="are_simulation_sandb
 
 PROVIDERS = [
     "openai",
-    "openai",
     "copilot",
     "meta",
     "local",

@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # run_gaia2_full.sh — Run GAIA2 benchmark across all 10 universes (21–30)
-#
-# Agent:  default
-# Model:  gpt-5-20250807 with reasoning_effort="low"
-# Judge:  Llama-3.3-70B-Instruct via azure (CloudGPT)
+
 # ============================================================================
 set -euo pipefail
 
