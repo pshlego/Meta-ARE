@@ -114,6 +114,7 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
             provider="openai",
             endpoint=endpoint,
             api_key=key,
+            reasoning_effort=engine_config.reasoning_effort,
         )
         return LiteLLMEngine(model_config=model_config)
 
@@ -131,8 +132,7 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
         model_config = LiteLLMModelConfig(
             model_name=engine_config.model_name,
             provider="azure",
-            # endpoint=endpoint,
-            # api_key=key,
+            reasoning_effort=engine_config.reasoning_effort,
         )
         return LiteLLMEngine(model_config=model_config)
 
@@ -172,6 +172,7 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
             model_name=engine_config.model_name,
             provider=provider,
             endpoint=engine_config.endpoint,
+            reasoning_effort=engine_config.reasoning_effort,
         )
         return LiteLLMEngine(model_config=model_config)
 
@@ -192,6 +193,7 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
             model_name=model_name,
             provider=provider,
             endpoint=engine_config.endpoint,
+            reasoning_effort=engine_config.reasoning_effort,
         )
         return LiteLLMEngine(model_config=model_config)
 
@@ -235,5 +237,6 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
             model_name=engine_config.model_name,
             provider=engine_config.provider,
             endpoint=engine_config.endpoint,
+            reasoning_effort=engine_config.reasoning_effort,
         )
         return LiteLLMEngine(model_config=model_config)
