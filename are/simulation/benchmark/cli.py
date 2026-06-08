@@ -342,9 +342,9 @@ def validate_benchmark_scenario_sources(**scenario_params):
 )
 @click.option(
     "--reasoning_effort",
-    type=click.Choice(["minimal", "low", "medium", "high"]),
+    type=click.Choice(["minimal", "low", "medium", "high", "xhigh"]),
     default=None,
-    help="Reasoning effort level for the agent model (e.g., 'low', 'medium', 'high'). Only applicable to reasoning-capable models.",
+    help="Reasoning effort level for the agent model (e.g., 'low', 'medium', 'high', 'xhigh'). Only applicable to reasoning-capable models.",
 )
 @click.option(
     "--judge_model",

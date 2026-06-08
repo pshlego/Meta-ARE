@@ -36,7 +36,7 @@ class LiteLLMModelConfig(BaseModel):
     provider: str
     endpoint: str | None = None
     api_key: str | None = None
-    reasoning_effort: str | None = None  # "low", "medium", or "high"
+    reasoning_effort: str | None = None  # "minimal", "low", "medium", "high", or "xhigh"
 
 
 class LiteLLMEngine(LLMEngine):

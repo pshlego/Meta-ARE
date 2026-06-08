@@ -22,11 +22,19 @@ cloudgpt_available_models = Literal[
     "gpt-5-pro-20251006",  # ChatCompletions, Responses
     "gpt-5.1-20251113",  # ChatCompletions, Responses
     "gpt-5.2-20251211",  # ChatCompletions, Responses
+    "gpt-5.4-20260305",  # ChatCompletions, Responses
+    "gpt-5.4-pro-20260305",  # Responses
+    "gpt-5.4-mini-20260317",  # ChatCompletions, Responses
+    "gpt-5.4-nano-20260317",  # ChatCompletions, Responses
+    "gpt-5.5-20260424",  # ChatCompletions, Responses
     # Chat models
     "gpt-5-chat-20250807",  # ChatCompletions, Responses
     "gpt-5-chat-20251003",  # ChatCompletions, Responses
     "gpt-5.1-chat-20251113",  # ChatCompletions, Responses
     "gpt-5.2-chat-20251211",  # ChatCompletions, Responses
+    "gpt-5.2-chat-20260210",  # ChatCompletions, Responses
+    "gpt-5.3-chat-20260303",  # ChatCompletions, Responses
+    "gpt-chat-latest-20260505",  # ChatCompletions, Responses
     # Coding models
     "codex-mini-20250516",  # Responses
     "gpt-5-codex-20250915",  # Responses
@@ -34,6 +42,7 @@ cloudgpt_available_models = Literal[
     "gpt-5.1-codex-mini-20251113",  # Responses
     "gpt-5.1-codex-max-20251204",  # Responses
     "gpt-5.2-codex-20260114",  # Responses
+    "gpt-5.3-codex-20260224",  # Responses
     # Computer use models
     "computer-use-preview-20250311",  # Responses
     # Reasoning models
@@ -59,6 +68,11 @@ cloudgpt_available_models = Literal[
     "grok-4-fast-reasoning", # ChatCompletions
     "grok-4-fast-non-reasoning", # ChatCompletions
     "grok-code-fast-1", # ChatCompletions
+    "grok-4-1-fast-reasoning", # ChatCompletions
+    "grok-4-1-fast-non-reasoning", # ChatCompletions
+    "grok-4-20-reasoning", # ChatCompletions
+    "grok-4-20-non-reasoning", # ChatCompletions
+    "grok-4.3", # ChatCompletions
     ##########################################################################
     # DeepSeek Models
     ##########################################################################
@@ -68,21 +82,28 @@ cloudgpt_available_models = Literal[
     "DeepSeek-V3.1", # ChatCompletions
     "DeepSeek-V3.2", # ChatCompletions
     "DeepSeek-V3.2-Speciale", # ChatCompletions
-    ##########################################################################
-    # Meta Llama Models
-    ##########################################################################
-    "Llama-3.3-70B-Instruct", # ChatCompletions
+    "DeepSeek-V4-Flash", # ChatCompletions
+    "DeepSeek-V4-Pro", # ChatCompletions
     ##########################################################################
     # Moonshot Models
     ##########################################################################
     "Kimi-K2-Thinking", # ChatCompletions
+    "Kimi-K2.5", # ChatCompletions
+    "Kimi-K2.6", # ChatCompletions
+    ##########################################################################
+    # Meta Models
+    ##########################################################################
+    "Llama-3.3-70B-Instruct", # ChatCompletions
+    "Llama-4-Maverick-17B-128E-Instruct-FP8", # ChatCompletions
     ##########################################################################
     # Image Generation Models
     ##########################################################################
-    "dall-e-3", # ImageGeneration
     "gpt-image-1", # ImageGeneration, ImageEdit
     "gpt-image-1-mini", # ImageGeneration, ImageEdit
     "gpt-image-1.5", # ImageGeneration, ImageEdit
+    "gpt-image-2", # ImageGeneration, ImageEdit
+    "MAI-Image-2", # MAI-ImageGeneration
+    "MAI-Image-2e", # MAI-ImageGeneration
     ##########################################################################
     # Video Generation Models
     ##########################################################################
