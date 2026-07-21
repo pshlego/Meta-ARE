@@ -31,6 +31,7 @@ ARE_SIMULATION_SANDBOX_PATH: str = tempfile.mkdtemp(prefix="are_simulation_sandb
 
 PROVIDERS = [
     "azure",
+    "azure-ces",
     "copilot",
     "meta",
     "local",

@@ -347,6 +347,12 @@ def validate_benchmark_scenario_sources(**scenario_params):
     help="Reasoning effort level for the agent model (e.g., 'low', 'medium', 'high', 'xhigh'). Only applicable to reasoning-capable models.",
 )
 @click.option(
+    "--azure_config_dir",
+    type=str,
+    default=None,
+    help="Azure CLI profile directory used to authenticate the agent model.",
+)
+@click.option(
     "--judge_model",
     type=str,
     default=DEFAULT_JUDGE_MODEL,
@@ -364,6 +370,12 @@ def validate_benchmark_scenario_sources(**scenario_params):
     default=None,
     help="URL of the endpoint for the judge model. Optional for custom endpoints.",
 )
+@click.option(
+    "--judge_azure_config_dir",
+    type=str,
+    default=None,
+    help="Azure CLI profile directory used to authenticate the judge model.",
+)
 @click.pass_context
 def main(
     ctx: click.Context,
@@ -371,6 +383,7 @@ def main(
     model: str,
     provider: str | None = None,
     endpoint: str | None = None,
+    azure_config_dir: str | None = None,
     agent: str | None = None,
     log_level: str = "INFO",
     oracle: bool = False,
@@ -406,6 +419,7 @@ def main(
     judge_model: str = DEFAULT_JUDGE_MODEL,
     judge_provider: str | None = None,
     judge_endpoint: str | None = None,
+    judge_azure_config_dir: str | None = None,
     # Checkpoint parameters
     enable_checkpoints: bool = False,
     checkpoint_verbose: bool = False,
@@ -504,6 +518,7 @@ def main(
             limit=limit,
             model_provider=provider,
             endpoint=endpoint,
+            azure_config_dir=azure_config_dir,
             oracle=oracle,
             output_dir=output_dir,
             hf_upload=hf_upload,
@@ -520,6 +535,7 @@ def main(
             judge_model=judge_model,
             judge_provider=judge_provider,
             judge_endpoint=judge_endpoint,
+            judge_azure_config_dir=judge_azure_config_dir,
             log_level=log_level,
             **gaia2_kwargs,
         )
@@ -605,6 +621,7 @@ def main(
                 limit=limit,
                 model_provider=provider,
                 endpoint=endpoint,
+                azure_config_dir=azure_config_dir,
                 agent=agent,
                 oracle=oracle,
                 offline_validation=offline_validation,
@@ -626,6 +643,7 @@ def main(
                 judge_model=judge_model,
                 judge_provider=judge_provider,
                 judge_endpoint=judge_endpoint,
+                judge_azure_config_dir=judge_azure_config_dir,
                 reasoning_effort=reasoning_effort,
                 log_level=log_level,  # Pass log level to run_dataset
                 enable_checkpoints=enable_checkpoints,

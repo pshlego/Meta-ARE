@@ -72,6 +72,9 @@ class ScenarioRunnerConfig(BaseModel):
     # URL of the endpoint to contact for running the agent's model
     endpoint: str | None = None
 
+    # Azure CLI profile used to authenticate the agent's model
+    azure_config_dir: str | None = None
+
     # Maximum number of turns of the conversation between the user and the agent.
     max_turns: int | None = 1
 

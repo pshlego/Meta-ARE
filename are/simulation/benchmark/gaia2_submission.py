@@ -31,6 +31,7 @@ def handle_gaia2_run(
     limit: int | None = None,
     model_provider: str | None = None,
     endpoint: str | None = None,
+    azure_config_dir: str | None = None,
     oracle: bool = False,
     output_dir: str | None = None,
     hf_upload: str | None = None,
@@ -47,6 +48,7 @@ def handle_gaia2_run(
     judge_model: str = "meta-llama/Meta-Llama-3.3-70B-Instruct",
     judge_provider: str | None = None,
     judge_endpoint: str | None = None,
+    judge_azure_config_dir: str | None = None,
     log_level: str = "INFO",
     **kwargs,
 ):
@@ -187,6 +189,7 @@ def handle_gaia2_run(
                     limit=remaining_limit,
                     model_provider=model_provider,
                     endpoint=endpoint,
+                    azure_config_dir=azure_config_dir,
                     agent="default",  # for gaia2 submission, we always use default agent
                     oracle=oracle,
                     offline_validation=False,
@@ -208,6 +211,7 @@ def handle_gaia2_run(
                     judge_model=judge_model,
                     judge_provider=judge_provider,
                     judge_endpoint=judge_endpoint,
+                    judge_azure_config_dir=judge_azure_config_dir,
                     log_level=log_level,
                     phase_name=phase_name,
                     **run_dataset_kwargs,

@@ -61,6 +61,9 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
         if engine_config.provider == "azure":
             return self._create_azure_engine(engine_config)
 
+        if engine_config.provider == "azure-ces":
+            return self._create_azure_ces_engine(engine_config)
+
         if engine_config.provider == "copilot":
             return self._create_copilot_engine(engine_config)
 
@@ -132,6 +135,24 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
         model_config = LiteLLMModelConfig(
             model_name=engine_config.model_name,
             provider="azure",
+            endpoint=engine_config.endpoint,
+            azure_config_dir=engine_config.azure_config_dir,
+            reasoning_effort=engine_config.reasoning_effort,
+        )
+        return LiteLLMEngine(model_config=model_config)
+
+    def _create_azure_ces_engine(self, engine_config: LLMEngineConfig) -> LLMEngine:
+        """Create an OpenAI-compatible CES engine authenticated by Azure CLI."""
+        from are.simulation.agents.llm.litellm.litellm_engine import (
+            LiteLLMEngine,
+            LiteLLMModelConfig,
+        )
+
+        model_config = LiteLLMModelConfig(
+            model_name=engine_config.model_name,
+            provider="azure-ces",
+            endpoint=engine_config.endpoint,
+            azure_config_dir=engine_config.azure_config_dir,
             reasoning_effort=engine_config.reasoning_effort,
         )
         return LiteLLMEngine(model_config=model_config)
@@ -237,6 +258,7 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
             model_name=engine_config.model_name,
             provider=engine_config.provider,
             endpoint=engine_config.endpoint,
+            azure_config_dir=engine_config.azure_config_dir,
             reasoning_effort=engine_config.reasoning_effort,
         )
         return LiteLLMEngine(model_config=model_config)

@@ -129,6 +129,7 @@ def _create_scenario_runner_config(
         model=config.model,
         model_provider=config.model_provider,
         endpoint=config.endpoint,
+        azure_config_dir=config.azure_config_dir,
         agent=config.agent,
         scenario_creation_params=config.scenario_creation_params,
         scenario_initialization_params=config.scenario_initialization_params,
@@ -200,8 +201,11 @@ def process_scenario(
 
     # Create scenario runner - use checkpointable version if checkpoint config provided
     if config.checkpoint_config is not None and config.checkpoint_config.enabled:
-        from are.simulation.checkpoint import CheckpointableScenarioRunner, CheckpointManager
-        
+        from are.simulation.checkpoint import (
+            CheckpointableScenarioRunner,
+            CheckpointManager,
+        )
+
         checkpoint_manager = CheckpointManager(config.checkpoint_config)
         scenario_runner = CheckpointableScenarioRunner(
             checkpoint_config=config.checkpoint_config,

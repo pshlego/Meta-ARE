@@ -8,22 +8,30 @@
 import logging
 import re
 import time
-import traceback
 from typing import Any
 
 from litellm import completion
 from litellm.exceptions import APIError, AuthenticationError
 from litellm.types.utils import Choices, ModelResponse
+from openai import AzureOpenAI, OpenAI
 from pydantic import BaseModel
 
+from are.simulation.agents.llm.azure_cli import get_azure_cli_token_provider
 from are.simulation.agents.llm.llm_engine import LLMEngine, LLMEngineException
 
 # TODO: Litellm should be agnostic to the agent or model. Remove this dependency.
 from are.simulation.agents.llm.types import MessageRole
 from are.simulation.agents.multimodal import Attachment
 
-from are.simulation.agents.llm.litellm.cloudgpt_aoai import get_openai_token_provider
-from openai import AzureOpenAI
+CLOUDGPT_RESOURCE = "api://feb7b661-cac7-44a8-8dc1-163b63c23df2"
+CLOUDGPT_BASE_URL = "https://cloudgpt-openai.azure-api.net/openai/"
+CLOUDGPT_API_VERSION = "2025-04-01-preview"
+CES_RESOURCE = "api://17b0ad65-ed36-4194-bb27-059c567bc41f"
+CES_BASE_URL = "https://ces-dev1.azurewebsites.net/api/proxy"
+CES_DEFAULT_HEADERS = {
+    "Copilot-Integration-Id": "autodev-test",
+    "ces-proxy-target": "https://api.githubcopilot.com",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +44,7 @@ class LiteLLMModelConfig(BaseModel):
     provider: str
     endpoint: str | None = None
     api_key: str | None = None
+    azure_config_dir: str | None = None
     reasoning_effort: str | None = None  # "minimal", "low", "medium", "high", or "xhigh"
 
 
@@ -62,20 +71,34 @@ Action:
 """
         self._client = None
         if self.model_config.provider == "azure":
-            token_provider = get_openai_token_provider(use_azure_cli=True)
+            token_provider = get_azure_cli_token_provider(
+                resource=CLOUDGPT_RESOURCE,
+                azure_config_dir=self.model_config.azure_config_dir,
+            )
             token_provider()
 
-            self._api_version = "2025-04-01-preview"
-            self._base_url = "https://cloudgpt-openai.azure-api.net/openai/"
+            self._api_version = CLOUDGPT_API_VERSION
+            self._base_url = self.model_config.endpoint or CLOUDGPT_BASE_URL
 
             self._client = AzureOpenAI(
                 base_url=self._base_url,
                 api_version=self._api_version,
-                azure_ad_token_provider=token_provider
+                azure_ad_token_provider=token_provider,
+            )
+        elif self.model_config.provider == "azure-ces":
+            token_provider = get_azure_cli_token_provider(
+                resource=CES_RESOURCE,
+                azure_config_dir=self.model_config.azure_config_dir,
+            )
+            token_provider()
+
+            self._base_url = self.model_config.endpoint or CES_BASE_URL
+            self._client = OpenAI(
+                base_url=self._base_url,
+                api_key=token_provider,
+                default_headers=CES_DEFAULT_HEADERS,
             )
         elif self.model_config.provider == "copilot":
-            from openai import OpenAI
-
             copilot_base = model_config.endpoint or "http://localhost:4141/v1"
             self._base_url = copilot_base
             self._client = OpenAI(
@@ -153,14 +176,18 @@ Action:
                     mock_response=self.mock_response,
                     **optional_kwargs,
                 )
-            elif self.model_config.provider == "copilot":
+            elif self.model_config.provider in {"azure-ces", "copilot"}:
                 assert self._client is not None, "Copilot client not initialized."
                 response = completion(
                     model=self.model_config.model_name,
                     custom_llm_provider="openai",
                     messages=converted_messages,
                     api_base=self._base_url,
-                    api_key=self.model_config.api_key or "EMPTY",
+                    api_key=(
+                        self.model_config.api_key or "EMPTY"
+                        if self.model_config.provider == "copilot"
+                        else None
+                    ),
                     client=self._client,
                     mock_response=self.mock_response,
                     **optional_kwargs,

@@ -91,6 +91,7 @@ def _apply_a2a_config(
             model_name=model_name,
             provider=model_provider,
             endpoint=endpoint,
+            azure_config_dir=config.azure_config_dir,
         )
 
         new_apps = [app for app in scenario.apps if app not in apps_to_transform]
@@ -220,6 +221,7 @@ class ScenarioRunner:
         model: str,
         provider: str | None = None,
         endpoint: str | None = None,
+        azure_config_dir: str | None = None,
         max_turns: int | None = None,
         simulated_generation_time_mode: str = "measured",
         use_custom_logger: bool = True,
@@ -239,6 +241,7 @@ class ScenarioRunner:
         agent_config.get_base_agent_config().use_custom_logger = use_custom_logger
         agent_config.get_base_agent_config().llm_engine_config = LLMEngineConfig(
             model_name=model, provider=provider, endpoint=endpoint,
+            azure_config_dir=azure_config_dir,
             reasoning_effort=reasoning_effort,
         )
 
@@ -329,6 +332,7 @@ class ScenarioRunner:
                     config.model,
                     config.model_provider,
                     config.endpoint,
+                    config.azure_config_dir,
                     config.max_turns,
                     config.simulated_generation_time_mode,
                     config.use_custom_logger,

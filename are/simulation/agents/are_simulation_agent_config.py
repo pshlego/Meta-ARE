@@ -21,6 +21,7 @@ class LLMEngineConfig(BaseModel):
     )
     provider: str | None = None
     endpoint: str | None = None
+    azure_config_dir: str | None = None
     reasoning_effort: str | None = None  # "minimal", "low", "medium", "high", or "xhigh"
 
 

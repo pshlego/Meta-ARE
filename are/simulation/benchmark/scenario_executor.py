@@ -204,6 +204,7 @@ def run_dataset(
     limit: int | None = None,
     model_provider: str | None = None,
     endpoint: str | None = None,
+    azure_config_dir: str | None = None,
     agent: str | None = None,
     oracle: bool = False,
     offline_validation: bool = False,
@@ -226,6 +227,7 @@ def run_dataset(
     judge_model: str = DEFAULT_JUDGE_MODEL,
     judge_provider: str | None = None,
     judge_endpoint: str | None = None,
+    judge_azure_config_dir: str | None = None,
     reasoning_effort: str | None = None,
     log_level: str = "INFO",
     phase_name: str | None = None,
@@ -290,6 +292,7 @@ def run_dataset(
     checkpoint_config = None
     if enable_checkpoints:
         from pathlib import Path
+
         from are.simulation.checkpoint import CheckpointConfig
 
         # Checkpoints stored in subdirectory of output_dir
@@ -312,6 +315,7 @@ def run_dataset(
         output_dir=output_dir,
         trace_dump_format=trace_dump_format,
         endpoint=endpoint,
+        azure_config_dir=azure_config_dir,
         max_concurrent_scenarios=max_concurrent_scenarios,
         executor_type=executor_type,
         enable_caching=enable_caching,
@@ -330,6 +334,7 @@ def run_dataset(
             model_name=judge_model,
             provider=judge_provider,
             endpoint=judge_endpoint,
+            azure_config_dir=judge_azure_config_dir,
         ),
         reasoning_effort=reasoning_effort,
         log_level=log_level,
