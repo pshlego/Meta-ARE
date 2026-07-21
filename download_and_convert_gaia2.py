@@ -1,7 +1,8 @@
 from datasets import load_dataset
 import os, json
 
-BASE = "/sdb/v-parksungho/Meta-ARE/datasets_local/gaia2"
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+BASE = os.path.join(PROJECT_ROOT, "datasets_local", "gaia2")
 configs = ["execution","search","adaptability","time","ambiguity"]
 # configs = ["time","ambiguity"]
 

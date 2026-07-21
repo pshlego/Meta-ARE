@@ -8,8 +8,9 @@ import os
 import re
 import shutil
 
-SRC_BASE = "/sdb/v-parksungho/Meta-ARE/datasets_local/gaia2"
-DST_BASE = "/sdb/v-parksungho/Meta-ARE/datasets_local/gaia2_by_universe"
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+SRC_BASE = os.path.join(PROJECT_ROOT, "datasets_local", "gaia2")
+DST_BASE = os.path.join(PROJECT_ROOT, "datasets_local", "gaia2_by_universe")
 
 configs = ["execution", "search", "adaptability", "time", "ambiguity"]
 copied = 0
