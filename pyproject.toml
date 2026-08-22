@@ -30,6 +30,13 @@ files = ["requirements.txt"]
 [tool.hatch.metadata.hooks.requirements_txt.optional-dependencies]
 dev = ["requirements-dev.txt"]
 
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "requirements.txt" },
+    { file = "requirements-dev.txt" },
+]
+
 
 [tool.hatch.build.targets.wheel]
 only-include = ["are"]
