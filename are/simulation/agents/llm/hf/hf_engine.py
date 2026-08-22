@@ -64,8 +64,11 @@ class HuggingFaceLLMEngine(LLMEngine):
 
         self.model_config = model_config
 
-        # api_key will need to be parametrizable to the provider's token to be more general
-        api_key = os.getenv("HF_INFERENCE_TOKEN") or os.getenv("HF_TOKEN")
+        api_key = (
+            os.getenv("OPENAI_API_KEY")
+            if model_config.provider == "openai"
+            else os.getenv("HF_INFERENCE_TOKEN") or os.getenv("HF_TOKEN")
+        )
 
         self.client = InferenceClient(
             bill_to=os.getenv("HF_BILL_TO") or None,
