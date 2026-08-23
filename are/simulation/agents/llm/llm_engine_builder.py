@@ -83,7 +83,6 @@ class LLMEngineBuilder(AbstractLLMEngineBuilder):
             "nebius",
             "novita",
             "nscale",
-            "openai",
             "replicate",
             "sambanova",
             "together",
