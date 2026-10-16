@@ -150,4 +150,10 @@ class Gaia2Orchestrator(Orchestrator):
             capability=case.capability,
         )
         trace.policy_model_id = self.policy_spec.client_kwargs.get("model", "")
+        if result.disposition == "task_failure" and trace.error:
+            # A stalled agent (no turn boundary / scenario timeout after real
+            # model calls) is a task failure, not an execution error: keep it
+            # in success statistics and in skill induction.
+            trace.steps[0].info["failure_category"] = f"agent_stalled:{trace.error}"
+            trace.error = None
         return trace

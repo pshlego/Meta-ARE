@@ -77,3 +77,19 @@ def test_passthrough_candidate_skips_rollouts(tmp_path):
     orch.run()
     assert len(runner.calls) == 2  # baselines only
     assert {t.kind for t in orch.trace_store.all()} == {"baseline"}
+
+
+def test_stalled_agent_is_a_failure_not_an_error(tmp_path):
+    from envharness_gaia2.gaia2_run import ScenarioResult
+    from helpers import write_scenario_output
+
+    task_cases = cases(tmp_path, 1)
+    orch = _orchestrator(tmp_path, ScriptedHarnessAgent(lambda k, p: Candidate()), FakeGaia2Runner(lambda *a: False),
+                         task_cases, [0])
+    path = write_scenario_output(tmp_path / "out" / "scenario_universe_29_t0", success=None)
+    stalled = ScenarioResult("scenario_universe_29_t0", 0, "task_failure", None, path, "h", None, "agent stalled")
+    trace = orch._trace(stalled, 0, task_cases[0], Candidate(), "it")
+    assert trace.error is None and trace.success is False
+    assert trace.steps[0].info["failure_category"].startswith("agent_stalled")
+    infra = ScenarioResult("scenario_universe_29_t0", 0, "execution_error", None, path, "h", None, "infrastructure")
+    assert orch._trace(infra, 0, task_cases[0], Candidate(), "it").error.startswith("execution_error")
