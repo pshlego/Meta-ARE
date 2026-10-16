@@ -58,6 +58,10 @@ int main(int argc, char *argv[]) {
 
     /* Set state directory */
     setenv("GAIA2_STATE_DIR", "/var/gaia2/state", 1);
+    /* Only the event daemon tags ENV actions with an event ID; an agent must
+       not forge one (it would also bypass environment rules). */
+    unsetenv("GAIA2_EVENT_ID");
+    unsetenv("GAIA2_ENV_RULES_HOME");
 
     /* Re-inject libfaketime only when faketime is configured (LD_PRELOAD is
      * stripped by kernel for setuid binaries, so we must re-set it).

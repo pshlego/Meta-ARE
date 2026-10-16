@@ -1094,6 +1094,8 @@ class ContainerRunner:
             ("/tmp/faketime.rc", "faketime.rc"),
             ("/tmp/gaia2_harness_applied.json", "harness_applied.json"),
             ("/tmp/gaia2-adapter.log", "adapter.log"),
+            ("/var/gaia2/env_rules/applied.jsonl", "env_rules_applied.jsonl"),
+            ("/var/gaia2/env_rules/errors.log", "env_rules_errors.log"),
         ]:
             try:
                 self.launcher.copy_from(container_id, src, str(artifact_dir / dst))

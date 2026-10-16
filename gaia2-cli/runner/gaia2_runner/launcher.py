@@ -31,7 +31,10 @@ _RELAY_PORT = 18888
 _PROXY_RELAY_ENV = "GAIA2_PROXY_RELAY_URL"
 _CA_BUNDLE_ENV = "GAIA2_CA_BUNDLE"
 _CONTAINER_CA_BUNDLE = "/etc/ssl/certs/gaia2-host-ca-bundle.crt"
-_HOST_CONTROL_ENV_KEYS = frozenset({_PROXY_RELAY_ENV, _CA_BUNDLE_ENV})
+# Host env var with comma-separated ``key=value`` container labels, so a
+# caller can find (and clean up) exactly the containers of one run.
+_CONTAINER_LABELS_ENV = "GAIA2_CONTAINER_LABELS"
+_HOST_CONTROL_ENV_KEYS = frozenset({_PROXY_RELAY_ENV, _CA_BUNDLE_ENV, _CONTAINER_LABELS_ENV})
 
 # Module-level proxy relay singleton — shared across all launcher instances
 # so multiple concurrent containers reuse one relay.
@@ -464,6 +467,8 @@ class LocalLauncher(ContainerLauncher):
         )
         for volume in extra_volumes or ():
             cmd.extend(["-v", volume])
+        for label in filter(None, os.environ.get(_CONTAINER_LABELS_ENV, "").split(",")):
+            cmd.extend(["--label", label.strip()])
 
         # ── Dynamic port allocation ─────────────────────────────────────
         if adapter_port is not None:

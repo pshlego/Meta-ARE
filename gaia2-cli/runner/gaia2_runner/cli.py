@@ -1487,6 +1487,7 @@ def _build_execution_config(
     judge_time_check: str | None = None,
     max_scenario_duration: int | None = None,
     harness_dir: str | None = None,
+    env_rules_dir: str | None = None,
 ) -> tuple[
     ScenarioExecutionConfig,
     str | None,
@@ -1595,6 +1596,24 @@ def _build_execution_config(
             "harness_dir": str(harness_path),
             "harness_digest": harness_digest,
         }
+
+    # Environment-side rules (gaia2_cli/env_rules.py), installed under
+    # /var/gaia2 by the OpenClaw entrypoint and pinned by digest.
+    if env_rules_dir:
+        from .container_env import detect_profile
+
+        if detect_profile(image).agent_home is None:
+            raise click.UsageError("env rules are only supported for OpenClaw images")
+        rules_path = Path(env_rules_dir).expanduser().resolve() / "rules.py"
+        if not rules_path.is_file():
+            raise click.UsageError(f"env rules dir has no rules.py: {rules_path.parent}")
+        import hashlib
+
+        rules_digest = "sha256:" + hashlib.sha256(rules_path.read_bytes()).hexdigest()
+        volumes = (*volumes, f"{rules_path.parent}:/opt/gaia2_env_rules_src:ro")
+        container_env["GAIA2_ENV_RULES_DIR"] = "/opt/gaia2_env_rules_src"
+        container_env["GAIA2_ENV_RULES_DIGEST"] = rules_digest
+        result_metadata["env_rules_digest"] = rules_digest
 
     execution_config = ScenarioExecutionConfig(
         image=image,
@@ -2847,6 +2866,7 @@ def run_config(config_path: str, retry: bool, dry_run: bool) -> None:
             judge_time_check=config.judge.time_check,
             max_scenario_duration=config.run.max_scenario_duration,
             harness_dir=config.agent.harness_dir,
+            env_rules_dir=config.agent.env_rules_dir,
         )
 
         run_config_base: JsonDict = {
@@ -2933,6 +2953,7 @@ def run_config(config_path: str, retry: bool, dry_run: bool) -> None:
             judge_time_check=config.judge.time_check,
             max_scenario_duration=config.run.max_scenario_duration,
             harness_dir=config.agent.harness_dir,
+            env_rules_dir=config.agent.env_rules_dir,
         )
 
         run_config_base = {

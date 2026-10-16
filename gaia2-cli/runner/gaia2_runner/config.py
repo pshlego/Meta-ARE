@@ -83,6 +83,8 @@ class AgentConfig:
     reasoning_effort: str | None = None
     # External OpenClaw harness directory (gaia2-cli/harness/openclaw layout).
     harness_dir: str | None = None
+    # Directory holding an env-rules ``rules.py`` (gaia2_cli/env_rules.py).
+    env_rules_dir: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,6 +394,7 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
             "context_window",
             "reasoning_effort",
             "harness_dir",
+            "env_rules_dir",
         },
     )
     _validate_allowed_keys(
@@ -592,6 +595,13 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
             _as_optional_str(agent_table.get("harness_dir"), "[agent].harness_dir"),
             base_dir=base_dir,
             name="[agent].harness_dir",
+            must_exist=True,
+            must_be_dir=True,
+        ),
+        env_rules_dir=_resolve_path(
+            _as_optional_str(agent_table.get("env_rules_dir"), "[agent].env_rules_dir"),
+            base_dir=base_dir,
+            name="[agent].env_rules_dir",
             must_exist=True,
             must_be_dir=True,
         ),

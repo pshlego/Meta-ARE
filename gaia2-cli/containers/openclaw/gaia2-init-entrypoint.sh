@@ -145,6 +145,32 @@ resolve_harness() {
 }
 
 
+install_env_rules() {
+    # EnvHarness-style environment rules for agent app-CLI calls (see
+    # gaia2_cli/env_rules.py). The rules live under /var/gaia2 (gaia2-only),
+    # so the agent can neither read nor alter them.
+    [ -n "${GAIA2_ENV_RULES_DIR:-}" ] || return 0
+    local src="$GAIA2_ENV_RULES_DIR/rules.py" dst=/var/gaia2/env_rules actual
+    if [ ! -f "$src" ]; then
+        echo "[gaia2-init] ERROR: env rules dir has no rules.py: $GAIA2_ENV_RULES_DIR" >&2
+        exit 1
+    fi
+    actual="sha256:$(sha256sum "$src" | cut -d' ' -f1)"
+    if [ -n "${GAIA2_ENV_RULES_DIGEST:-}" ] && [ "$actual" != "$GAIA2_ENV_RULES_DIGEST" ]; then
+        echo "[gaia2-init] ERROR: env rules digest $actual != expected $GAIA2_ENV_RULES_DIGEST" >&2
+        exit 1
+    fi
+    mkdir -p "$dst"
+    cp "$src" "$dst/rules.py"
+    : > "$dst/applied.jsonl"
+    : > "$dst/errors.log"
+    chown -R gaia2:gaia2 "$dst"
+    chmod 700 "$dst"
+    chmod 600 "$dst/rules.py" "$dst/applied.jsonl" "$dst/errors.log"
+    echo "[gaia2-init] Installed env rules ($actual)" >&2
+}
+
+
 install_harness_skills() {
     # Workspace skills (<workspace>/skills) take precedence over bundled ones.
     # They are root-owned so the agent can read but not rewrite them.
@@ -397,6 +423,7 @@ main() {
     resolve_harness
     install_harness_skills
     init_state
+    install_env_rules
     start_eventd
     start_adapter
     start_tls_proxy_if_needed
