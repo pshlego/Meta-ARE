@@ -1,0 +1,70 @@
+# EnvHarness skill-bank co-evolution smoke on GAIA2 with OpenClaw.
+# Values follow /mnt/data2/Auto_Saddler/sandbox/AutoSaddler/configs/v2/meta_are_autosaddler_smoke_cloudgpt.yaml,
+# with the OpenClaw execution settings of AutoSaddler configs/v2/gaia2_openclaw_autosaddler_smoke_cloudgpt.yaml.
+schema_version: envharness-gaia2/v1
+arm: ours
+
+meta_are_repo: /mnt/data2/v-parksungho_icml/Meta-ARE        # feat/gaia2-openclaw-envharness
+seed_harness_dir: gaia2-cli/harness/openclaw                 # only skills/ evolves
+harness_policy: gaia2-cli/harness/policy/openclaw_overlay_policy.json
+image: localhost/gaia2-oc:envh-ff046a123b5f                  # built with the env-rules hook (4-3)
+image_id: sha256:5f6cdfd30075c61a423ef76e6373b49fe519d62c9d2c6a5aedfb011c79836982
+container_runtime: docker
+docker_group: docker
+
+data:
+  dataset_root: /mnt/data2/v-parksungho_icml/Meta-ARE/datasets_local/gaia2_cli_smoke
+  dataset_source_descriptor: /mnt/data2/v-parksungho_icml/Meta-ARE/datasets_local/gaia2_cli_smoke/.autosaddler-gaia2-cli-source.json
+  dataset_source_revision: 240ac47bfc62b24c934f95d014ffa5a3cab8b04c
+  train_manifest: /mnt/data2/v-parksungho_icml/AutoSaddler/configs/datasets/GAIA2/train_smoke.json     # 6
+  development_manifest: /mnt/data2/v-parksungho_icml/AutoSaddler/configs/datasets/GAIA2/val_smoke.json  # 1
+  test_manifest: /mnt/data2/v-parksungho_icml/AutoSaddler/configs/datasets/GAIA2/test_universe_22.json  # unused in smoke
+
+task_agent:
+  provider: azure
+  model: gpt-5.5-20260424
+  base_url: https://cloudgpt-openai.azure-api.net/openai/
+  reasoning_effort: xhigh
+  thinking: high
+  azure_config_dir: /mnt/data2/v-parksungho/cloudgpt-account
+judge:
+  provider: azure
+  model: Llama-3.3-70B-Instruct
+  base_url: https://cloudgpt-openai.azure-api.net/openai/
+  time_check: "off"
+
+run:
+  scenario_timeout_seconds: 1800
+  max_scenario_duration: 7200
+  health_timeout_seconds: 180
+  process_completion_grace_seconds: 60
+  max_concurrent: 3
+  infrastructure_retries: 1
+  eval_repetitions: 1
+
+optimizer_llm:                   # designer + induction + selection + consolidation
+  model: gpt-5.5
+  api_base: http://127.0.0.1:4148/v1
+  wire_api: responses            # Phase 0 P1: gpt-5.5 is not served on /chat/completions there
+  reasoning_effort: xhigh
+
+envrigger:
+  k_per_candidate: 3
+  max_k: 2
+  target_band: [0.3, 0.7]
+  skip_passthrough_candidates: true
+  allow_setup: false
+
+coevolution:
+  rounds: 2
+  task_selection: {type: epoch_shuffled, batch_size: 3, seed: 42}
+  max_new_skills_per_batch: 3
+  max_skills: 12
+  pairs_per_task: 2
+
+budget:
+  max_rollouts: 200
+  max_iterations: 5              # cap on batches
+
+storage:
+  run_root: /mnt/data2/v-parksungho_icml/working_dir/outputs/envharness_gaia2/runs

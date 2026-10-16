@@ -37,8 +37,11 @@ class ResponsesClient(LLMClient):
         max_retries: int = 6,
         retry_initial_delay: float = 2.0,
         timeout: float = 1800.0,
+        usage_log: str | None = None,
     ) -> None:
         from openai import OpenAI
+
+        self.usage_log = usage_log
 
         self.model_id = model
         self.reasoning_effort = reasoning_effort
@@ -94,6 +97,17 @@ class ResponsesClient(LLMClient):
                 if exc.status_code < 500 or attempt == self.max_retries:
                     raise
                 self._sleep(attempt, exc)
+        if self.usage_log and getattr(response, "usage", None) is not None:
+            usage = response.usage
+            record = {
+                "ts": time.time(),
+                "model": self.model_id,
+                "input_tokens": getattr(usage, "input_tokens", 0),
+                "output_tokens": getattr(usage, "output_tokens", 0),
+                "reasoning_tokens": getattr(getattr(usage, "output_tokens_details", None), "reasoning_tokens", 0),
+            }
+            with open(self.usage_log, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record) + "\n")
         calls = []
         for item in response.output:
             if getattr(item, "type", "") == "function_call":
@@ -133,7 +147,8 @@ def make_client(optimizer, *, log_path, role: str) -> LLMClient:
 
     if optimizer.wire_api == "responses":
         factory = "envharness_gaia2.designer:ResponsesClient"
-        kwargs = {"model": optimizer.model, "api_base": optimizer.api_base, "reasoning_effort": optimizer.reasoning_effort}
+        kwargs = {"model": optimizer.model, "api_base": optimizer.api_base, "reasoning_effort": optimizer.reasoning_effort,
+                  "usage_log": str(log_path.with_name("optimizer_usage.jsonl"))}
     else:
         factory = "envharness.infra.llm:LiteLLMClient"
         kwargs = {"model": f"openai/{optimizer.model}", "api_base": optimizer.api_base, "api_key": "dummy"}
