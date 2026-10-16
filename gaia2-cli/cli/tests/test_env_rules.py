@@ -175,3 +175,25 @@ def test_entry_points_cover_all_apps():
         module, _, attr = target.partition(":")
         assert module == "gaia2_cli.env_rules"
         assert callable(getattr(env_rules, attr)), name
+
+
+def test_subcommand_counter_ignores_help_probes(env, monkeypatch, capsys):
+    state, home = env
+    _rules(
+        home,
+        "class _Rules(Rules):\n"
+        "    def filter_action(self, action, env_state):\n"
+        "        if env_state['subcommand'] == 'add-event' and env_state['call_index_subcommand'] == 1:\n"
+        "            return Blocked(reason='Error: calendar service temporarily unavailable')\n"
+        "        return action\n",
+    )
+    _run(monkeypatch, capsys, ["--help"])
+    _run(monkeypatch, capsys, ["add-event", "--help"])
+    _run(monkeypatch, capsys, SEARCH)
+    code, _, err = _run(monkeypatch, capsys, ADD_EVENT)  # first real add-event: blocked
+    assert code == 1 and "temporarily unavailable" in err
+    code, out, _ = _run(monkeypatch, capsys, ADD_EVENT)  # retry goes through
+    assert code == 0 and sum(e["w"] for e in read_events(state)) == 1
+    saved = json.loads((home / "state.json").read_text())
+    assert saved["per_subcommand"] == {"calendar.search-events": 1, "calendar.add-event": 2}
+    assert saved["per_app"]["calendar"] == 5

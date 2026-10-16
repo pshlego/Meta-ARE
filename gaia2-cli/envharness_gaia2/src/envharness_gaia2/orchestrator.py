@@ -39,9 +39,12 @@ ENV_STATE_SCHEMA = (
     "env_state passed to filter_action/filter_observation:\n"
     '  app: str              # "calendar", "contacts", "emails", "messages", "chats",\n'
     '                        # "rent-a-flat", "city", "cabs", "shopping", "cloud-drive"\n'
-    '  subcommand: str       # e.g. "get-contacts", "add-event"\n'
-    "  call_index_app: int   # 1-based count of the student's calls to this app\n"
-    "  call_index_total: int # 1-based count of all the student's app calls\n"
+    '  subcommand: str       # e.g. "get-contacts", "add-event" ("" or "schema" for probes)\n'
+    "  is_help: bool         # True for --help / schema probes\n"
+    "  call_index_app: int   # 1-based count of the student's calls to this app (incl. probes)\n"
+    "  call_index_total: int # 1-based count of all the student's app calls (incl. probes)\n"
+    "  call_index_subcommand: int  # 1-based count of real calls of this app+subcommand (0 for probes)\n"
+    "Rules objects keep no state across calls (one process per app call); use the counters.\n"
     "Observation.data for filter_observation: {exit_code: int, wrote: bool}"
 )
 

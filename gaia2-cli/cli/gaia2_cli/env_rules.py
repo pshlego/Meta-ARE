@@ -136,8 +136,13 @@ def _error(home: Path, app: str, context: str) -> None:
     )
 
 
-def _next_call_index(home: Path, app: str) -> tuple[int, int]:
-    """Increment and return (per-app, total) call counters, 1-based."""
+def _next_call_index(home: Path, app: str, subcommand: str, is_help: bool) -> tuple[int, int, int]:
+    """Increment and return (per-app, total, per-subcommand) call counters, 1-based.
+
+    Help/schema probes count toward the app and total counters but not toward
+    the per-subcommand counter (0 for them), so rules can target "the first
+    real call of X" even when the agent explores with ``--help`` first.
+    """
     state_path = home / "state.json"
     with open(home / "state.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -149,14 +154,22 @@ def _next_call_index(home: Path, app: str) -> tuple[int, int]:
             per_app = state.setdefault("per_app", {})
             per_app[app] = int(per_app.get(app, 0)) + 1
             state["total"] = int(state.get("total", 0)) + 1
+            per_sub = state.setdefault("per_subcommand", {})
+            key = f"{app}.{subcommand}"
+            if not is_help:
+                per_sub[key] = int(per_sub.get(key, 0)) + 1
             state_path.write_text(json.dumps(state), encoding="utf-8")
-            return per_app[app], state["total"]
+            return per_app[app], state["total"], (0 if is_help else per_sub[key])
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def _subcommand(argv: list[str]) -> str:
     return next((arg for arg in argv if not arg.startswith("-")), "")
+
+
+def _is_help(argv: list[str], subcommand: str) -> bool:
+    return subcommand in ("", "schema") or any(arg in ("--help", "-h") for arg in argv)
 
 
 def _write_count() -> int:
@@ -204,9 +217,10 @@ def run_app(app: str, group: Any) -> None:
 
     argv = sys.argv[1:]
     subcommand = _subcommand(argv)
+    is_help = _is_help(argv, subcommand)
     try:
         rules = load_rules_class(rules_file.read_text(encoding="utf-8"))()
-        app_index, total_index = _next_call_index(home, app)
+        app_index, total_index, subcommand_index = _next_call_index(home, app, subcommand, is_help)
     except Exception:
         _error(home, app, "rules load failed; running unchanged")
         group()
@@ -215,8 +229,10 @@ def run_app(app: str, group: Any) -> None:
     env_state = {
         "app": app,
         "subcommand": subcommand,
+        "is_help": is_help,
         "call_index_app": app_index,
         "call_index_total": total_index,
+        "call_index_subcommand": subcommand_index,
     }
     action = Action(
         name=f"{app}.{subcommand}" if subcommand else app,

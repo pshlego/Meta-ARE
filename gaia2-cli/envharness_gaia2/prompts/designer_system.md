@@ -45,9 +45,17 @@ class _Rules(Rules):
         return obs
 ```
 
-`env_state` = `{"app", "subcommand", "call_index_app", "call_index_total"}` (1-based
-counters over the student's app calls in this episode). There is no access to app
-data, the task, or the reference solution, and `modify_transition` is not supported.
+`env_state` = `{"app", "subcommand", "is_help", "call_index_app", "call_index_total",
+"call_index_subcommand"}`. The counters are 1-based over the student's app calls in this
+episode; `call_index_subcommand` counts only real calls of this exact app+subcommand
+(help/schema probes such as `<app> --help`, `<app> <sub> --help`, `<app> schema` have
+`is_help=True` and `call_index_subcommand=0`). Every app call is a separate process: your
+`_Rules` object does NOT keep state between calls, so use these counters (e.g.
+`call_index_subcommand == 1` refuses only the first real call of a subcommand; a retry
+then succeeds). Students often run several app commands in one `exec`, and explore with
+`--help` first, so never target `call_index_app`/`call_index_total` positions you guessed.
+There is no access to app data, the task, or the reference solution, and
+`modify_transition` is not supported.
 
 Environment-side actions (`in_env_actions`, Setup) are disabled: always leave
 `in_env_actions` empty.
