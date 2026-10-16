@@ -381,17 +381,19 @@ def preprocess_scenario_from_config(
     # Preprocess the scenario
     if not config.oracle:
         # Create judge configuration using provided parameters
-        from are.simulation.validation.configs import (
-            GraphPerEventJudgeConfig,
-            create_judge_engine,
-        )
+        # If judge_engine_config is None, skip judge creation entirely
+        judge_config = None
+        if config.judge_engine_config is not None:
+            from are.simulation.validation.configs import (
+                GraphPerEventJudgeConfig,
+                create_judge_engine,
+            )
 
-        judge_engine = create_judge_engine(config.judge_engine_config)
-
-        judge_config = GraphPerEventJudgeConfig(
-            engine=judge_engine,
-            disable_time_check=True,  # TODO: re-enable for full experiment run
-        )
+            judge_engine = create_judge_engine(config.judge_engine_config)
+            judge_config = GraphPerEventJudgeConfig(
+                engine=judge_engine,
+                disable_time_check=True,  # TODO: re-enable for full experiment run
+            )
 
         preprocess_scenario(
             scenario=scenario,

@@ -8,6 +8,15 @@
 
 Meta Agents Research Environments (ARE) is a platform designed to evaluate AI agents in dynamic, realistic scenarios. Unlike static benchmarks, this research platform introduces evolving environments where agents must adapt their strategies as new information becomes available, mirroring real-world challenges. In particular, ARE runs the [Gaia2](#example-gaia2-benchmark) benchmark, a follow-up to [Gaia](https://arxiv.org/abs/2311.12983), evaluating a broader range of agent capabilities.
 
+![Gaia2 CLI Announcement](gaia2-cli/assets/announcement_banner.png)
+
+Looking for the container-based Gaia2-CLI benchmark stack? Start with
+[gaia2-cli](gaia2-cli).
+
+
+> **New:** [facebook/omnilingual-gaia2](https://huggingface.co/datasets/facebook/omnilingual-gaia2), a
+> multilingual extension of Gaia2! See [Omnilingual-Gaia2](#omnilingual-gaia2) below.
+
 ## Table of Contents
 
 - [Background](#background)
@@ -34,6 +43,7 @@ ARE addresses critical gaps in AI agent evaluation by providing:
 | **[Quick Start](https://facebookresearch.github.io/meta-agents-research-environments/quickstart.html)** | Get up and running with your first scenario in just a few minutes with step-by-step instructions. |
 | **[Gaia2 Evaluation](https://facebookresearch.github.io/meta-agents-research-environments/user_guide/gaia2_evaluation.html)** | Build and evaluate your agents on the Gaia2 benchmark, a comprehensive suite of 800 dynamic scenarios across 10 universes. |
 | **[Gaia2 Blog Post](https://huggingface.co/blog/gaia2)** | Learn more about Gaia2 on the Hugging Face blog. |
+| **[Omnilingual-Gaia2](https://huggingface.co/datasets/facebook/omnilingual-gaia2)** | Multilingual translation of Gaia2, for evaluating agents beyond English. Translation pipeline in [gaia2-cli/mt](gaia2-cli/mt/README.md). |
 | **[Paper](https://ai.meta.com/research/publications/are-scaling-up-agent-environments-and-evaluations/)** | Read the research paper detailing the Gaia2 benchmark and evaluation methodology. |
 | **[Demo](https://huggingface.co/spaces/meta-agents-research-environments/demo)** | [Try the ARE Demo on Hugging Face](https://huggingface.co/spaces/meta-agents-research-environments/demo) — Play around with the agent platform directly in your browser, no installation required! |
 | **[Gaia2 Leaderboard](https://huggingface.co/spaces/meta-agents-research-environments/leaderboard)** | Check the self-published results from Gaia2 Benchmark runs. |
@@ -64,15 +74,20 @@ All the commands in this README and the documentation are available through `uvx
 
 ### Traditional Installation
 
-Alternatively, install the package directly:
+Alternatively, install the package directly with different dependency sets:
 
 ```bash
-# With uv (recommended)
-uv pip install meta-agents-research-environments
-
-# With pip
+# Minimal install (core dependencies only)
+# Good for basic benchmarking and running most scenarios
 pip install meta-agents-research-environments
+
+# With GUI (recommended for interactive exploration)
+pip install "meta-agents-research-environments[gui]"
 ```
+
+**Which installation should I choose?**
+- **Minimal** (`meta-agents-research-environments`): For running benchmarks and scenarios via CLI
+- **With GUI** (`[gui]`): Adds web interface for interactive exploration (recommended for local development)
 
 ## Usage
 
@@ -148,6 +163,63 @@ are-benchmark gaia2-run --hf meta-agents-research-environments/gaia2 \
   --hf_upload my-org/gaia2-results
 ```
 
+### Omnilingual-Gaia2
+
+[facebook/omnilingual-gaia2](https://huggingface.co/datasets/facebook/omnilingual-gaia2) is a
+multilingual extension of Gaia2 — 10 languages across the `execution`, `search`,
+`ambiguity` and `adaptability` splits. The gaia2-cli runner downloads and caches it for
+you: set `[target].language` to pick the language, and
+`[judge].prompt_version = "omnilingual-gaia2"` to enable the multilingual judge prompts,
+without which a correct non-English answer is often scored as a miss.
+
+```bash
+# Copy the annotated template, then edit the language, models and endpoints
+cp gaia2-cli/runner/examples/openclaw_qwen_omnilingual_gaia2_pass3.toml ./my_omnilingual_run.toml
+
+# Validate the config and resolve the scenario selection without launching
+export OPENAI_COMPAT_API_KEY="your-api-key"
+gaia2-runner run-config --config ./my_omnilingual_run.toml --dry-run
+
+# Run the evaluation
+gaia2-runner run-config --config ./my_omnilingual_run.toml
+```
+
+The relevant part of the template:
+
+```toml
+[target]
+dataset = "facebook/omnilingual-gaia2"
+language = "spa_Latn"   # or cmn_Hans, deu_Latn, fra_Latn, ...
+
+[judge]
+prompt_version = "omnilingual-gaia2"
+```
+
+To translate Gaia2 into another language yourself, see
+[gaia2-cli/mt](gaia2-cli/mt/README.md).
+
+### Sequential Gaia2
+
+Sequential Gaia2 chains the scenarios of each universe. Every scenario still runs in a
+fresh container, but it starts from the agent's memory, conversation and app state left
+by the previous scenario of its chain. The gaia2-cli runner ships chain orderings for the
+`search` (160 scenarios) and `execution` (95 scenarios) splits, one chain per universe.
+OpenClaw images only.
+
+```bash
+# Validate the example config and resolve the chains without launching
+export ANTHROPIC_API_KEY="your-api-key"
+gaia2-runner run-config --config gaia2-cli/runner/examples/openclaw_sonnet_gaia2_sequential_search.toml --dry-run
+
+# Run the evaluation
+gaia2-runner run-config --config gaia2-cli/runner/examples/openclaw_sonnet_gaia2_sequential_search.toml
+```
+
+The example finds its sequence file relative to its own location, so update
+`[target].sequences` if you copy it elsewhere. See
+[Sequential Runs](gaia2-cli/runner/README.md#sequential-runs) for the sequence format,
+checkpoints, `--retry` and the context window override.
+
 ## API
 
 ### Core Concepts
@@ -196,9 +268,9 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 If you use Meta Agents Research Environments in your work, please cite:
 
 ```bibtex
-@misc{andrews2025arescalingagentenvironments,
+@misc{froger2025arescalingagentenvironments,
       title={ARE: Scaling Up Agent Environments and Evaluations},
-      author={Pierre Andrews and Amine Benhalloum and Gerard Moreno-Torres Bertran and Matteo Bettini and Amar Budhiraja and Ricardo Silveira Cabral and Virginie Do and Romain Froger and Emilien Garreau and Jean-Baptiste Gaya and Hugo Laurençon and Maxime Lecanu and Kunal Malkan and Dheeraj Mekala and Pierre Ménard and Grégoire Mialon and Ulyana Piterbarg and Mikhail Plekhanov and Mathieu Rita and Andrey Rusakov and Thomas Scialom and Vladislav Vorotilov and Mengjue Wang and Ian Yu},
+      author={Romain Froger and Pierre Andrews and Matteo Bettini and Amar Budhiraja and Ricardo Silveira Cabral and Virginie Do and Emilien Garreau and Jean-Baptiste Gaya and Hugo Laurençon and Maxime Lecanu and Kunal Malkan and Dheeraj Mekala and Pierre Ménard and Gerard Moreno-Torres Bertran and Ulyana Piterbarg and Mikhail Plekhanov and Mathieu Rita and Andrey Rusakov and Vladislav Vorotilov and Mengjue Wang and Ian Yu and Amine Benhalloum and Grégoire Mialon and Thomas Scialom},
       year={2025},
       eprint={2509.17158},
       archivePrefix={arXiv},

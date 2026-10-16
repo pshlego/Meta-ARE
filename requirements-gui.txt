@@ -1,0 +1,25 @@
+# GUI server dependencies
+# Used in: simulation/gui/server/server.py and related GUI modules
+
+# FastAPI web framework
+# Used in: simulation/gui/server/server.py
+fastapi==0.116.1
+
+# ASGI routing and utilities
+# Used in: simulation/gui/server/server.py, simulation/gui/server/graphql/common.py
+starlette==0.47.2
+
+# GraphQL implementation (imported as 'strawberry', not 'strawberry_graphql')
+# Used in: simulation/gui/server/graphql/*.py files
+strawberry-graphql==0.275.5
+
+# ASGI server
+# Used in: simulation/gui/server/server.py
+uvicorn==0.35.0
+
+# WebSocket protocol support (dependency of uvicorn)
+wsproto==1.2.0
+
+# PDF preview functionality in GUI
+# Used in: simulation/gui/server/utils.py
+pypdf==6.0.0

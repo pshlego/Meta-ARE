@@ -21,7 +21,7 @@ install:
 		rm -rf $(VENVDIR); \
 	fi
 	UV_VENV_CLEAR=1 uv venv $(VENVDIR)
-	uv pip install -e ../. --python $(VENVDIR)/bin/python
+	cd .. && uv pip install -e '.[dev,gui]' --python docs/$(VENVDIR)/bin/python
 	uv pip install -r requirements.txt --python $(VENVDIR)/bin/python
 
 # Build HTML documentation using UV virtual environment

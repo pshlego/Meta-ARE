@@ -21,11 +21,11 @@ FROM python:3.12.6-slim AS python-builder
 ENV PIP_ROOT_USER_ACTION=ignore
 RUN pip install uv
 WORKDIR /app
-COPY pyproject.toml requirements.txt requirements-dev.txt README.md LICENSE ./
+COPY pyproject.toml requirements.txt requirements-gui.txt requirements-dev.txt README.md LICENSE ./
 COPY build_hooks ./build_hooks
 COPY are/simulation /app/are/simulation
 RUN rm -rf /app/are/simulation/gui/client
-RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -e .
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system -e ".[gui]"
 
 # Stage 3 - Final stage
 FROM python:3.12.6-slim

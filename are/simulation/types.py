@@ -21,7 +21,27 @@ from functools import wraps
 from types import MethodType
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
-import strawberry
+# Optional strawberry import for GraphQL support
+# When strawberry is not installed, we use no-op decorators
+try:
+    import strawberry
+
+    HAS_STRAWBERRY = True
+except ImportError:
+    HAS_STRAWBERRY = False
+
+    # Create no-op decorators when strawberry is not available
+    class _StrawberryStub:
+        def enum(self, cls):
+            """No-op decorator when strawberry is not available"""
+            return cls
+
+        def type(self, cls):
+            """Decorator that converts class to dataclass when strawberry is not available"""
+            # Apply dataclass decorator to provide __init__ method
+            return dataclass(cls)
+
+    strawberry = _StrawberryStub()  # type: ignore
 
 from are.simulation.priority_queue import PriorityQueue
 from are.simulation.time_manager import TimeManager
@@ -114,6 +134,7 @@ class HintType(Enum):
 
 
 @strawberry.type
+@dataclass
 class Hint:
     """
     Hint associated with an event
