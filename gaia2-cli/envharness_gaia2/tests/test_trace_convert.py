@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+import builtins
+import json
+from pathlib import Path
+
+import pytest
+from envharness.core.types import Candidate
+
+from envharness_gaia2.gaia2_run import disposition_of
+from envharness_gaia2.trace_convert import FORBIDDEN_FILES, convert, failure_category, user_request
+
+from helpers import FIXTURES, write_scenario_output
+
+
+def _convert(path: Path):
+    return convert(path, task_idx=4, task_id="gaia2", iteration_id="it", candidate=Candidate(), capability="search")
+
+
+def test_convert_real_fixture_without_opening_oracle_files(monkeypatch):
+    opened = []
+    real_open = builtins.open
+
+    def spy(file, *args, **kwargs):
+        opened.append(str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", spy)
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: (opened.append(str(self)), real_open(self, encoding="utf-8").read())[1])
+    trace = _convert(FIXTURES / "scenario_universe_29_0wlkxc")
+    assert not [p for p in opened if Path(p).name in FORBIDDEN_FILES]
+    assert trace.success is True and trace.rollout_seed == 4
+    assert trace.duration_steps == len(trace.steps) > 5
+    first = trace.steps[0]
+    assert first.raw_action.name == "exec" and first.raw_action.kwargs["command"].startswith("chats --help")
+    assert first.filtered_observation.text.startswith("Task: Find the person with whom I have the most conversations")
+    assert "Sender (untrusted metadata)" not in first.filtered_observation.text
+    assert first.blocked_reason is None
+    blocked = [s for s in trace.steps if s.blocked_reason]
+    assert len(blocked) == 1 and blocked[0].filtered_action is None
+    assert blocked[0].raw_action.kwargs["command"].startswith("contacts get-contacts")
+
+
+def test_failure_reasons_are_reduced_to_categories(tmp_path):
+    path = write_scenario_output(tmp_path / "scenario_universe_29_x", success=False)
+    trace = _convert(path)
+    assert trace.success is False and trace.error is None
+    dumped = trace.model_dump_json()
+    assert "oracle" not in dumped and "ORACLE-SECRET" not in dumped
+    assert trace.steps[0].info["failure_category"] == "tool_count_mismatch"
+    assert failure_category({"success": False, "failure_reasons": ["Tool count mismatch: agent={}, oracle={'a': 1}"]}) == "no_tool_calls"
+    assert failure_category({"success": None, "timed_out": True}) == "timeout"
+    assert user_request("Sender (untrusted metadata):\n```json\n{}\n```\n\n[Tue 2024-10-15 07:00 UTC] Do it.") == "Do it."
+
+
+def test_disposition_requires_matching_digests():
+    ok = {"success": True, "harness_digest": "h"}
+    assert disposition_of(ok, [200], {"digest": "h"}, "h", None)[0] == "success"
+    assert disposition_of(ok, [200], {"digest": "x"}, "h", None)[0] == "execution_error"
+    assert disposition_of({**ok, "env_rules_digest": "r"}, [200], {"digest": "h"}, "h", "r")[0] == "success"
+    assert disposition_of(ok, [200], {"digest": "h"}, "h", "r")[0] == "execution_error"
+    stalled = {"success": None, "harness_digest": "h", "error": "No judgment (no turn boundary detected)"}
+    assert disposition_of(stalled, [200], {"digest": "h"}, "h", None)[0] == "task_failure"
+    assert disposition_of(stalled, [], {"digest": "h"}, "h", None)[0] == "execution_error"

@@ -1,0 +1,32 @@
+[project]
+name = "envharness-gaia2"
+version = "0.1.0"
+description = "EnvHarness-style skill-bank co-evolution for OpenClaw on GAIA2 (gaia2-cli)"
+requires-python = ">=3.12"
+dependencies = [
+    "envharness",
+    "pyyaml>=6.0",
+    "openai>=1.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.uv.sources]
+# Read-only sibling checkout, pinned to its main commit and installed from a
+# git clone in uv's cache, so nothing is ever written into the checkout
+# (editable and plain path installs drop build/ and egg-info/ there).
+envharness = { git = "file:///mnt/data2/v-parksungho_icml/envharness", rev = "fab7d57441f06b75c73a900e04561d4d7600f361" }
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+envharness_gaia2 = ["../../prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

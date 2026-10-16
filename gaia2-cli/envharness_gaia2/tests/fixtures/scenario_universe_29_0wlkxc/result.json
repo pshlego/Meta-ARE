@@ -1,0 +1,21 @@
+{
+  "scenario_id": "scenario_universe_29_0wlkxc",
+  "success": true,
+  "reward": 1.0,
+  "num_agent_events": 112,
+  "num_oracle_events": 0,
+  "agent_response": "Catch-up and Collaboration",
+  "judged_in_container": true,
+  "daemon_status": {
+    "status": "complete",
+    "turn": 1,
+    "nb_turns": 1,
+    "num_events": 112,
+    "last_response": "Catch-up and Collaboration",
+    "judgment": {
+      "success": true,
+      "failure_reason": ""
+    }
+  },
+  "scenario_file": "/mnt/data2/v-parksungho_icml/Meta-ARE/datasets_local/gaia2_cli_smoke/train_smoke/search/scenario_universe_29_0wlkxc.json"
+}
