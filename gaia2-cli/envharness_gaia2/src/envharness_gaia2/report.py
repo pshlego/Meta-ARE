@@ -16,7 +16,20 @@ import subprocess
 import sys
 from pathlib import Path
 
-LEAK_TERMS = ("oracle", "match_details", "id_mapping", "daemon_judgments")
+# "oracle_function" is a key of every app's public `<app> schema` output (the agent sees it too),
+# not oracle data; it may also appear cut short ("oracle_f") where long tool outputs are truncated.
+# Every other "oracle" occurrence counts.
+LEAK_TERMS = {
+    "oracle": re.compile(r"oracle(?!_f(?:unction|unctio|uncti|unct|unc|un|u)?\b)"),
+    "match_details": re.compile("match_details"),
+    "id_mapping": re.compile("id_mapping"),
+    "daemon_judgments": re.compile("daemon_judgments"),
+}
+# CLI app name -> module under gaia2-cli/cli/gaia2_cli/apps (as in gaia2_cli.env_rules).
+_APP_MODULES = {"calendar": "calendar", "contacts": "contacts", "emails": "email", "messages": "messages",
+                "chats": "chats", "rent-a-flat": "apartment", "city": "city", "cabs": "cab",
+                "shopping": "shopping", "cloud-drive": "files"}
+_COMMAND_DEF = re.compile(r'^@cli\.command\("([^"]+)"[^)]*\).*?^def (\w+)\(', re.M | re.S)
 _SCENARIO_ID = re.compile(r"scenario_universe_\d+_[0-9a-z]+")
 
 
@@ -37,6 +50,50 @@ def _json(path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def command_functions(apps_dir: Path) -> dict[tuple[str, str], str]:
+    """(app, subcommand) -> function name logged to events.jsonl (the click callback name)."""
+    mapping = {}
+    for app, module in _APP_MODULES.items():
+        path = apps_dir / f"{module}.py"
+        if path.is_file():
+            for command, function in _COMMAND_DEF.findall(path.read_text(encoding="utf-8")):
+                mapping[(app, command)] = function
+    return mapping
+
+
+def leaked_blocked_writes(scenario_dir: Path, functions: dict[tuple[str, str], str]) -> int:
+    """Writes in events.jsonl that only a blocked call could have produced.
+
+    A blocked call exits before the app runs, so for every blocked (app, subcommand)
+    the writes of its function cannot exceed the agent's invocations of that
+    subcommand minus the blocked ones. Invocations are counted from the exec
+    commands (an upper bound: a failed `a && b` chain counts b too), so the check
+    never flags a concurrent allowed call of the same subcommand.
+    """
+    from envharness_gaia2.trace_convert import _exec_command, conversation
+
+    blocked: dict[tuple[str, str], int] = {}
+    for entry in _jsonl(scenario_dir / "env_rules_applied.jsonl"):
+        if entry.get("kind") == "blocked":
+            key = (entry.get("app", ""), entry.get("subcommand", ""))
+            blocked[key] = blocked.get(key, 0) + 1
+    if not blocked:
+        return 0
+    events = _jsonl(scenario_dir / "events.jsonl")
+    commands = [_exec_command(call) for message in conversation(scenario_dir)
+                for call in message.get("tool_calls") or [] if isinstance(call, dict)]
+    leaked = 0
+    for (app, subcommand), n_blocked in blocked.items():
+        function = functions.get((app, subcommand))
+        writes = sum(1 for ev in events if ev.get("w") is True and ev.get("fn") == function)
+        if function is None or writes == 0:
+            continue
+        call = re.compile(rf"(?<![\w-]){re.escape(app)}\s+{re.escape(subcommand)}(?![\w-])(?![^;&|]*--help)")
+        invocations = sum(len(call.findall(command)) for command in commands)
+        leaked += max(0, writes - max(0, invocations - n_blocked))
+    return leaked
 
 
 def _results(root: Path) -> list[Path]:
@@ -93,17 +150,21 @@ class Report:
         ok &= bool(decisions) and with_digest == len(variant_results) and bool(interventions)
         self.add("2. EnvRigger ran (baseline -> design -> variant rollouts -> decision)", ok, lines)
 
-        violations = [e for _, e in applied if e.get("kind") == "write_observation_ignored"]
-        leaked_blocks = 0
-        for path, entry in applied:
-            if entry.get("kind") != "blocked":
-                continue
-            events = _jsonl(path.parent / "events.jsonl")
-            leaked_blocks += sum(1 for ev in events if abs(float(ev.get("t", 0)) - float(entry["t"])) < 0.05
-                                 and str(ev.get("app", "")).lower().startswith(entry["app"][:4]))
+        all_applied = [(p, e) for p in (self.run / "rounds").rglob("env_rules_applied.jsonl") for e in _jsonl(p)]
+        violations = [e for _, e in all_applied if e.get("kind") == "write_observation_ignored"]
+        functions = command_functions(Path(self.config.get("config", {}).get("meta_are_repo", ""))
+                                      / "gaia2-cli" / "cli" / "gaia2_cli" / "apps")
+        rollouts = sorted({p.parent for p, e in all_applied if e.get("kind") == "blocked"})
+        leaked_blocks = sum(leaked_blocked_writes(d, functions) for d in rollouts)
+        blocked_writes = sum(1 for _, e in all_applied if e.get("kind") == "blocked"
+                             and functions.get((e.get("app"), e.get("subcommand"))) is not None
+                             and any(ev.get("fn") == functions[(e["app"], e["subcommand"])] and ev.get("w") is True
+                                     for ev in _jsonl(_.parent / "events.jsonl")))
         errors = [p for p in self.run.rglob("env_rules_errors.log") if p.stat().st_size > 0]
-        self.add("3. Judge integrity", leaked_blocks == 0 and not errors,
-                 [f"- blocked calls with a matching events.jsonl entry: {leaked_blocks}",
+        self.add("3. Judge integrity", leaked_blocks == 0 and not errors and bool(functions),
+                 [f"- rollouts with blocked calls (all rounds): {len(rollouts)}, "
+                  f"blocked calls of a write command that also wrote elsewhere in the rollout: {blocked_writes}",
+                  f"- writes only a blocked call could have produced: {leaked_blocks}",
                   f"- ignored write-output rewrites: {len(violations)}",
                   f"- non-empty env_rules_errors.log: {[str(p) for p in errors] or 'none'}"])
 
@@ -162,10 +223,11 @@ class Report:
         for name in ("designer_calls.jsonl", "induce_calls.jsonl"):
             path = self.run / name
             text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
-            counts = {term: text.count(term) for term in LEAK_TERMS}
+            counts = {term: len(pattern.findall(text)) for term, pattern in LEAK_TERMS.items()}
+            counts["oracle_function (public schema key, not counted)"] = text.count("oracle_function")
             ids = len(_SCENARIO_ID.findall(text))
             lines.append(f"- {name}: {counts}, scenario ids: {ids}")
-            ok &= not any(counts.values()) and ids == 0
+            ok &= not any(counts[term] for term in LEAK_TERMS) and ids == 0
         skills_text = "\n".join(p.read_text() for p in self.run.rglob("harness/skills/*/SKILL.md"))
         skill_ids = len(_SCENARIO_ID.findall(skills_text))
         lines.append(f"- scenario ids in rendered skills: {skill_ids}")
@@ -230,6 +292,9 @@ class Report:
             mark = "PASS" if ok else ("INFO" if ok is None else "FAIL")
             out += [f"## {title} — {mark}", "", *lines, ""]
             print(f"{mark:4}  {title}")
+        notes = self.run / "smoke_notes.md"  # operator notes (aborted attempts, resumes), kept across regenerations
+        if notes.is_file():
+            out += ["## Run notes", "", notes.read_text(encoding="utf-8").strip(), ""]
         path = self.run / "smoke_report.md"
         path.write_text("\n".join(out) + "\n", encoding="utf-8")
         return path

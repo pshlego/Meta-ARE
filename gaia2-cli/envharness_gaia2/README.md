@@ -52,3 +52,9 @@ with the seed digest and no env-rules artifacts; with example rules (first `cont
 refused, long `messages`/`emails` lists cut to 3) `success=true`, `env_rules_applied.jsonl`
 recorded 1 blocked + 2 modified, empty `env_rules_errors.log`, and the agent's conversation
 never mentions the rules.
+
+## Smoke result (2026-10-16)
+
+`envh-oc-smoke-20261016T104706Z`: 2 rounds × 2 batches, 93 co-evolution + 2 eval rollouts (cap 200),
+all 10 checks PASS (11 = cost info); seed → 8 skills; val_smoke seed 0/1, final 0/1 (smoke scale, validity only).
+Report with run notes (aborted first attempt, mid-run fix + resume): `reports/envh-oc-smoke-20261016T104706Z.md`.
