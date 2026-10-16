@@ -114,6 +114,7 @@ class Gaia2EventDaemon:
         judge_api_key: str | None = None,
         judge_prompt_version: str | None = None,
         judge_extra_body: dict | None = None,
+        judge_time_check: str = "enforce",
         poll_interval: float = 1.0,
         log_path: str | None = None,
         notify_url: str | None = None,
@@ -143,6 +144,9 @@ class Gaia2EventDaemon:
         self.judge_api_key = judge_api_key
         self.judge_prompt_version = judge_prompt_version
         self.judge_extra_body = judge_extra_body
+        # "off" mirrors ARE's GraphPerEventJudgeConfig(disable_time_check=True):
+        # timing mismatches are logged but never fail a match.
+        self.judge_time_check = judge_time_check
         self.poll_interval = poll_interval
         self.notify_url = notify_url
         self.faketime_path = Path(faketime_path) if faketime_path else None
@@ -353,6 +357,7 @@ class Gaia2EventDaemon:
             app_name_to_class=loader.app_name_to_class,
             state_dir=str(self.state_dir),
             prompt_overrides=prompt_overrides,
+            time_check_warn_only=self.judge_time_check == "off",
         )
         logger.info(
             "Judge created: %d turns, %d oracle events",
@@ -1224,6 +1229,13 @@ class Gaia2EventDaemon:
     "Ignored by non-vLLM providers (vLLM Jinja templates ignore unused kwargs).",
 )
 @click.option(
+    "--judge-time-check",
+    type=click.Choice(["enforce", "off"]),
+    default="enforce",
+    help="'off' logs timing mismatches without failing the match "
+    "(ARE's disable_time_check=True).",
+)
+@click.option(
     "--poll-interval",
     default=1.0,
     type=float,
@@ -1274,6 +1286,7 @@ def main(
     judge_api_key: str | None,
     judge_prompt_version: str | None,
     judge_extra_body: str | None,
+    judge_time_check: str,
     poll_interval: float,
     notify_url: str | None,
     faketime_path: str | None,
@@ -1324,6 +1337,7 @@ def main(
         judge_api_key=judge_api_key,
         judge_prompt_version=judge_prompt_version,
         judge_extra_body=parsed_extra_body,
+        judge_time_check=judge_time_check,
         poll_interval=poll_interval,
         log_path=log_path,
         notify_url=notify_url,

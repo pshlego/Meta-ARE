@@ -47,9 +47,12 @@ RUN rm -rf /app/gaia2_cli/ /app/pyproject.toml
 # Download gaia2_filesystem dataset (public, ~296 files).
 # Scenarios reference these via real_path fields; gaia2-init copies
 # only the files each scenario needs to /var/gaia2/state/filesystem/.
+# Pinned to the revision the ARE-based (meta_are) evaluation uses so both
+# stacks see the same files; override with --build-arg to change it.
 ARG HF_TOKEN=""
+ARG GAIA2_FS_REVISION=132e26376f5e963bb59f64bcccdd02188cb08dee
 RUN pip install --no-cache-dir "huggingface_hub[cli]" && \
-    HF_TOKEN="${HF_TOKEN}" python -c "from huggingface_hub import snapshot_download; snapshot_download('meta-agents-research-environments/gaia2_filesystem', repo_type='dataset', local_dir='/opt/gaia2_filesystem')" && \
+    HF_TOKEN="${HF_TOKEN}" python -c "from huggingface_hub import snapshot_download; snapshot_download('meta-agents-research-environments/gaia2_filesystem', repo_type='dataset', revision='${GAIA2_FS_REVISION}', local_dir='/opt/gaia2_filesystem')" && \
     pip uninstall -y huggingface_hub filelock fsspec tqdm && \
     rm -rf /root/.cache/huggingface
 

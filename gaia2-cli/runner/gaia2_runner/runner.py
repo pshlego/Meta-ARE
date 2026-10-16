@@ -117,8 +117,14 @@ class ContainerRunner:
         carry_in: CarriedState | None = None,
         carry_out: CarriedState | None = None,
         result_metadata: Mapping[str, Any] | None = None,
+        max_scenario_duration: int | None = None,
     ) -> dict[str, Any]:
         """Run a scenario end-to-end and return the result.
+
+        ``max_scenario_duration`` mirrors ARE's ``max_scenario_duration``: the
+        scenario's declared duration is replaced by it and ``response_timeout``
+        becomes the exact wall-clock budget (ARE's ``--scenario_timeout``)
+        instead of ``max(duration + 60, response_timeout)``.
 
         Args:
             scenario_json_path: Path to the scenario JSON file.
@@ -160,7 +166,15 @@ class ContainerRunner:
         scenario_duration = scenario_data.get("metadata", {}).get("definition", {}).get(
             "duration"
         ) or scenario_data.get("duration")
-        if scenario_duration is not None:
+        if max_scenario_duration is not None:
+            scenario_duration = float(max_scenario_duration)
+            effective_timeout = response_timeout
+            logger.info(
+                "Scenario duration overridden to %ds, wall-clock timeout=%ds",
+                int(scenario_duration),
+                effective_timeout,
+            )
+        elif scenario_duration is not None:
             scenario_duration = float(scenario_duration)
             effective_timeout = max(int(scenario_duration) + 60, response_timeout)
             logger.info(
@@ -325,8 +339,9 @@ class ContainerRunner:
                         "agent_response": agent_response,
                         "failure_reasons": [
                             f"Scenario timeout: agent did not complete within "
-                            f"{int(scenario_duration)}s scenario duration "
-                            f"({num_events} tool calls)"
+                            f"{effective_timeout}s "
+                            f"(scenario duration {int(scenario_duration)}s, "
+                            f"{num_events} tool calls)"
                         ],
                     }
                     logger.info(
@@ -1077,6 +1092,8 @@ class ContainerRunner:
             ("/var/gaia2/state/daemon_status.json", "daemon_status.json"),
             ("/var/gaia2/state/notifications.jsonl", "notifications.jsonl"),
             ("/tmp/faketime.rc", "faketime.rc"),
+            ("/tmp/gaia2_harness_applied.json", "harness_applied.json"),
+            ("/tmp/gaia2-adapter.log", "adapter.log"),
         ]:
             try:
                 self.launcher.copy_from(container_id, src, str(artifact_dir / dst))

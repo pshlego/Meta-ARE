@@ -21,6 +21,7 @@
 #   GAIA2_ADAPTER_PORT   — adapter HTTP port (default: 8090)
 #   GAIA2_JUDGE_BASE_URL — optional API base URL override for the in-container judge
 #   GAIA2_JUDGE_API_KEY  — optional API key override for the in-container judge
+#   GAIA2_JUDGE_TIME_CHECK — "off" logs judge timing mismatches without failing (ARE disable_time_check)
 #   FAKETIME             — simulated start time (e.g., "2025-09-01 07:00:00")
 #   OPENCLAW_CONTEXT_WINDOW — optional context window override (tokens)
 #   API_KEY / provider-specific keys — forwarded to the agent runtime
@@ -42,6 +43,10 @@ ADAPTER_LOG=/tmp/gaia2-adapter.log
 ENTRYPOINT_LOG=/tmp/entrypoint.log
 TLS_PROXY_PORT_FILE=/tmp/tls-proxy-port
 AGENT_ENV_FILE=/tmp/openclaw-env.sh
+HARNESS_TOOL=/opt/harness_tool.py
+HARNESS_POLICY=/opt/gaia2_harness_policy.json
+HARNESS_STAGE_DIR=/tmp/gaia2_harness_stage
+HARNESS_APPLIED_FILE=/tmp/gaia2_harness_applied.json
 
 
 detect_faketime_from_scenario() {
@@ -82,13 +87,79 @@ print(' '.join(r.get('remove', [])))
 
 
 render_agent_prompt() {
+    # With an external harness (GAIA2_HARNESS_DIR) the template comes from it
+    # and its workspace/*.md files are rendered with the same placeholders
+    # into a stage dir that openclaw_config.py copies into the workspace.
+    local template=/opt/AGENTS_TEMPLATE.md
+    local workspace_args=()
+    if [ -n "${GAIA2_HARNESS_DIR:-}" ]; then
+        template="$GAIA2_HARNESS_DIR/AGENTS_TEMPLATE.md"
+        workspace_args=(--workspace-dir "$GAIA2_HARNESS_DIR/workspace" \
+            --workspace-out "$HARNESS_STAGE_DIR/workspace")
+    fi
     /usr/local/bin/python3 /opt/render_agent_prompt.py \
         --scenario "$SCENARIO_PATH" \
-        --template /opt/AGENTS_TEMPLATE.md \
+        --template "$template" \
         --output-prompt /home/agent/AGENTS.md \
         --output-approvals /home/agent/.openclaw/exec-approvals.json \
+        "${workspace_args[@]}" \
         && chown -R agent:agent /home/agent/.openclaw /home/agent/AGENTS.md \
         && echo "[gaia2-init] Rendered AGENTS.md + exec-approvals.json" >&2
+}
+
+
+resolve_harness() {
+    # Validate the mounted harness against the policy baked into the image and
+    # pin its digest; a mismatch or invalid harness aborts the container so a
+    # run can never silently evaluate a different harness than requested.
+    [ -n "${GAIA2_HARNESS_DIR:-}" ] || return 0
+    if ! /usr/local/bin/python3 "$HARNESS_TOOL" check "$GAIA2_HARNESS_DIR" --policy "$HARNESS_POLICY" >&2; then
+        echo "[gaia2-init] ERROR: invalid harness at $GAIA2_HARNESS_DIR" >&2
+        exit 1
+    fi
+    local actual
+    actual=$(/usr/local/bin/python3 "$HARNESS_TOOL" digest "$GAIA2_HARNESS_DIR") || exit 1
+    if [ -n "${GAIA2_HARNESS_DIGEST:-}" ] && [ "$actual" != "$GAIA2_HARNESS_DIGEST" ]; then
+        echo "[gaia2-init] ERROR: harness digest $actual != expected $GAIA2_HARNESS_DIGEST" >&2
+        exit 1
+    fi
+    mkdir -p "$HARNESS_STAGE_DIR"
+    chmod 755 "$HARNESS_STAGE_DIR"
+    # OpenClaw refuses plugins whose files are not owned by root or the agent
+    # ("suspicious ownership"), and a bind mount keeps the host uid. Load
+    # harness plugins from a root-owned copy instead.
+    local plugin
+    for plugin in "$GAIA2_HARNESS_DIR"/plugins/*/; do
+        [ -f "$plugin/openclaw.plugin.json" ] || continue
+        mkdir -p "$HARNESS_STAGE_DIR/plugins"
+        cp -r "$plugin" "$HARNESS_STAGE_DIR/plugins/"
+    done
+    if [ -d "$HARNESS_STAGE_DIR/plugins" ]; then
+        chown -R root:root "$HARNESS_STAGE_DIR/plugins"
+        chmod -R a+rX,go-w "$HARNESS_STAGE_DIR/plugins"
+    fi
+    printf '{"harness_dir": "%s", "digest": "%s"}\n' "$GAIA2_HARNESS_DIR" "$actual" > "$HARNESS_APPLIED_FILE"
+    chmod 644 "$HARNESS_APPLIED_FILE"
+    export GAIA2_HARNESS_STAGE_DIR="$HARNESS_STAGE_DIR"
+    echo "[gaia2-init] Using harness $GAIA2_HARNESS_DIR ($actual)" >&2
+}
+
+
+install_harness_skills() {
+    # Workspace skills (<workspace>/skills) take precedence over bundled ones.
+    # They are root-owned so the agent can read but not rewrite them.
+    [ -n "${GAIA2_HARNESS_DIR:-}" ] || return 0
+    local found=0 skill
+    for skill in "$GAIA2_HARNESS_DIR"/skills/*/; do
+        [ -f "$skill/SKILL.md" ] || continue
+        found=1
+        mkdir -p /home/agent/skills
+        cp -r "$skill" /home/agent/skills/
+    done
+    [ "$found" = 1 ] || return 0
+    chown -R root:root /home/agent/skills
+    chmod -R a+rX,go-w /home/agent/skills
+    echo "[gaia2-init] Installed harness skills: $(ls /home/agent/skills | tr '\n' ' ')" >&2
 }
 
 
@@ -190,6 +261,7 @@ start_eventd() {
             ${GAIA2_JUDGE_API_KEY:+--judge-api-key '$GAIA2_JUDGE_API_KEY'} \
             ${GAIA2_JUDGE_PROMPT_VERSION:+--judge-prompt-version $GAIA2_JUDGE_PROMPT_VERSION} \
             ${GAIA2_JUDGE_EXTRA_BODY:+--judge-extra-body '$GAIA2_JUDGE_EXTRA_BODY'} \
+            ${GAIA2_JUDGE_TIME_CHECK:+--judge-time-check $GAIA2_JUDGE_TIME_CHECK} \
             ${GAIA2_TIME_SPEED:+--time-speed $GAIA2_TIME_SPEED} \
             ${GAIA2_IDLE_TIMEOUT:+--idle-timeout $GAIA2_IDLE_TIMEOUT} \
             >> '$EVENTD_LOG' 2>&1 &
@@ -297,7 +369,8 @@ STATIC
         NODE_EXTRA_CA_CERTS FAKETIME                                 \
         OPENCLAW_GATEWAY_PORT OPENCLAW_GATEWAY_URL OPENCLAW_GATEWAY_TOKEN OPENCLAW_HOOKS_TOKEN \
         OPENCLAW_CONTEXT_WINDOW \
-        GAIA2_TRACE_FILE \
+        GAIA2_TRACE_FILE GAIA2_LLM_FETCH_TIMEOUT_MS AGENT_TIMEOUT_SECONDS \
+        GAIA2_HARNESS_DIR GAIA2_HARNESS_STAGE_DIR \
         DONT_FAKE_MONOTONIC TLS_PROXY_PORT \
     ; do
         val="${!var:-}"
@@ -321,6 +394,8 @@ exec_agent_entrypoint() {
 
 main() {
     claim_agent_home
+    resolve_harness
+    install_harness_skills
     init_state
     start_eventd
     start_adapter

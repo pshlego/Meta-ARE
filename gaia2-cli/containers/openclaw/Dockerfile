@@ -203,6 +203,10 @@ RUN printf '#!/usr/bin/bash\nif [ -f /tmp/faketime.rc ]; then\n  export LD_PRELO
 # ── OpenClaw config + adapter + entrypoint ───────────────────────────────
 COPY shared/gaia2_adapter_base.py /opt/gaia2_adapter_base.py
 COPY shared/render_agent_prompt.py /opt/render_agent_prompt.py
+# External-harness support (GAIA2_HARNESS_DIR): validation/digest tool and the
+# overlay policy are baked in so a mounted harness cannot widen them.
+COPY shared/harness_tool.py /opt/harness_tool.py
+COPY harness/policy/openclaw_overlay_policy.json /opt/gaia2_harness_policy.json
 COPY shared/AGENTS_TEMPLATE.md /opt/AGENTS_TEMPLATE.md
 COPY containers/openclaw/gaia2_adapter.py /opt/gaia2_adapter.py
 COPY containers/openclaw/openclaw_config.py /opt/openclaw_config.py
@@ -230,3 +234,7 @@ RUN chmod +x /opt/gaia2-init-entrypoint.sh
 
 ENTRYPOINT []
 CMD ["/usr/bin/bash", "/opt/gaia2-init-entrypoint.sh"]
+
+# Source revision the image was built from (set by `make`).
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision=$GIT_SHA

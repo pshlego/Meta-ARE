@@ -8,7 +8,7 @@
 #   make verify           # smoke-test all images
 #   make verify-gaia2-oc   # smoke-test a single image
 #   make test             # run gaia2-cli unit tests
-#   make list             # list gaia2 images in podman store
+#   make list             # list gaia2 images (CONTAINER_RT=docker for docker)
 #   make clean            # remove all built images
 
 SHELL := /bin/bash
@@ -27,11 +27,13 @@ ALL_IMAGES := $(GAIA2_CLI_IMAGE) $(GAIA2_OC_IMAGE) \
               $(GAIA2_HERMES_IMAGE) $(GAIA2_MINI_IMAGE) $(GAIA2_ORACLE_IMAGE)
 
 # ── Build config ───────────────────────────────────────────────────────
-# Override PODMAN_BUILD / PODMAN_SAVE when your environment needs wrappers
-# such as sudo or a custom launcher. BUILD_EXTRA_HOST is optional for custom
-# host aliases during the build.
-PODMAN_BUILD ?= podman build
-PODMAN_SAVE  ?= podman save
+# CONTAINER_RT selects the container CLI (podman or docker). Override
+# PODMAN_BUILD / PODMAN_SAVE when your environment needs wrappers such as sudo
+# or a custom launcher. BUILD_EXTRA_HOST is optional for custom host aliases
+# during the build.
+CONTAINER_RT ?= podman
+PODMAN_BUILD ?= $(CONTAINER_RT) build
+PODMAN_SAVE  ?= $(CONTAINER_RT) save
 BUILD_EXTRA_HOST ?=
 HTTP_PROXY_VALUE  ?= $(or $(http_proxy),$(HTTP_PROXY))
 HTTPS_PROXY_VALUE ?= $(or $(https_proxy),$(HTTPS_PROXY),$(HTTP_PROXY_VALUE))
@@ -45,8 +47,12 @@ PROXY_ARGS  := $(if $(HTTP_PROXY_VALUE),--build-arg http_proxy=$(HTTP_PROXY_VALU
 
 GAIA2_CLI_ARGS := --build-arg GAIA2_CLI_IMAGE=localhost/gaia2-cli \
                  --build-arg GAIA2_CLI_VERSION=local
+GIT_SHA_ARG := --build-arg GIT_SHA=$(shell git -C $(CLI_CONTAINERS) rev-parse HEAD 2>/dev/null || echo unknown)
 
 # ── Helper: build + copy to user store ─────────────────────────────────
+# Only podman keeps separate root/user image stores; docker builds straight
+# into the daemon store, so there is nothing to copy.
+ifeq ($(CONTAINER_RT),podman)
 define copy-to-user
 	@echo "══════ Copying to user store ══════"
 	$(PODMAN_SAVE) $(1) | podman load
@@ -55,6 +61,11 @@ define copy-to-user
 	@echo "✓ $(1) ready (user store)"
 	@echo "════════════════════════════════════"
 endef
+else
+define copy-to-user
+	@echo "✓ $(1) ready ($(CONTAINER_RT) store)"
+endef
+endif
 
 # ── Targets ────────────────────────────────────────────────────────────
 
@@ -83,7 +94,7 @@ gaia2-cli: ## Build the gaia2-cli base image
 gaia2-oc: gaia2-cli ## Build gaia2-oc image
 	@echo "══════ Building gaia2-oc ══════"
 	cd $(CLI_CONTAINERS) && \
-	$(PODMAN_BUILD) $(BUILD_FLAGS) $(PROXY_ARGS) $(GAIA2_CLI_ARGS) \
+	$(PODMAN_BUILD) $(BUILD_FLAGS) $(PROXY_ARGS) $(GAIA2_CLI_ARGS) $(GIT_SHA_ARG) \
 		-f containers/openclaw/Dockerfile \
 		-t $(GAIA2_OC_IMAGE) .
 	$(call copy-to-user,$(GAIA2_OC_IMAGE))
@@ -118,7 +129,7 @@ verify: verify-gaia2-cli verify-gaia2-oc verify-gaia2-hermes verify-gaia2-mini-s
 
 verify-gaia2-cli: ## Verify gaia2-cli base image
 	@echo "══════ Verifying $(GAIA2_CLI_IMAGE) ══════"
-	podman run --rm $(GAIA2_CLI_IMAGE) /usr/bin/bash -c ' \
+	$(CONTAINER_RT) run --rm $(GAIA2_CLI_IMAGE) /usr/bin/bash -c ' \
 		echo "--- GAIA2 CLI tools ---"; \
 		for cmd in calendar contacts emails messages chats rent-a-flat city cabs shopping cloud-drive; do \
 			command -v "$$cmd" > /dev/null 2>&1 || { echo "FAIL: $$cmd not found"; exit 1; }; \
@@ -137,7 +148,7 @@ verify-gaia2-cli: ## Verify gaia2-cli base image
 
 verify-gaia2-oc: ## Verify gaia2-oc image
 	@echo "══════ Verifying $(GAIA2_OC_IMAGE) ══════"
-	podman run --rm $(GAIA2_OC_IMAGE) /usr/bin/bash -c ' \
+	$(CONTAINER_RT) run --rm $(GAIA2_OC_IMAGE) /usr/bin/bash -c ' \
 		echo "--- GAIA2 CLI tools ---"; \
 		for cmd in calendar contacts emails messages chats rent-a-flat city cabs shopping cloud-drive; do \
 			command -v "$$cmd" > /dev/null 2>&1 || { echo "FAIL: $$cmd not found"; exit 1; }; \
@@ -155,7 +166,7 @@ verify-gaia2-oc: ## Verify gaia2-oc image
 
 verify-gaia2-hermes: ## Verify gaia2-hermes image
 	@echo "══════ Verifying $(GAIA2_HERMES_IMAGE) ══════"
-	podman run --rm $(GAIA2_HERMES_IMAGE) /usr/bin/bash -c ' \
+	$(CONTAINER_RT) run --rm $(GAIA2_HERMES_IMAGE) /usr/bin/bash -c ' \
 		echo "--- GAIA2 CLI tools ---"; \
 		for cmd in calendar contacts emails messages chats rent-a-flat city cabs shopping cloud-drive; do \
 			command -v "$$cmd" > /dev/null 2>&1 || { echo "FAIL: $$cmd not found"; exit 1; }; \
@@ -167,7 +178,7 @@ verify-gaia2-hermes: ## Verify gaia2-hermes image
 
 verify-gaia2-mini-swe: ## Verify gaia2-mini-swe image
 	@echo "══════ Verifying $(GAIA2_MINI_IMAGE) ══════"
-	podman run --rm $(GAIA2_MINI_IMAGE) /usr/bin/bash -c ' \
+	$(CONTAINER_RT) run --rm $(GAIA2_MINI_IMAGE) /usr/bin/bash -c ' \
 		echo "--- GAIA2 CLI tools ---"; \
 		for cmd in calendar contacts emails messages chats rent-a-flat city cabs shopping cloud-drive; do \
 			command -v "$$cmd" > /dev/null 2>&1 || { echo "FAIL: $$cmd not found"; exit 1; }; \
@@ -182,7 +193,7 @@ verify-gaia2-mini-swe: ## Verify gaia2-mini-swe image
 
 verify-gaia2-oracle: ## Verify gaia2-oracle image
 	@echo "══════ Verifying $(GAIA2_ORACLE_IMAGE) ══════"
-	podman run --rm $(GAIA2_ORACLE_IMAGE) /usr/bin/bash -c ' \
+	$(CONTAINER_RT) run --rm $(GAIA2_ORACLE_IMAGE) /usr/bin/bash -c ' \
 		echo "--- GAIA2 CLI tools ---"; \
 		for cmd in calendar contacts emails messages chats rent-a-flat city cabs shopping cloud-drive; do \
 			command -v "$$cmd" > /dev/null 2>&1 || { echo "FAIL: $$cmd not found"; exit 1; }; \
@@ -210,19 +221,19 @@ test: ## Run Gaia2 unit tests
 
 # ── Utilities ──────────────────────────────────────────────────────────
 
-list: ## List gaia2 images in podman store
+list: ## List gaia2 images in the container store
 	@echo "── Images ──"
-	@podman images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.Created}}" | \
+	@$(CONTAINER_RT) images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.Created}}" | \
 		grep -E 'gaia|REPOSITORY' || true
 
 stop: ## Stop all containers and kill port listeners
 	@echo "Stopping all containers..."
-	-podman rm -af
+	-$(CONTAINER_RT) rm -f $$($(CONTAINER_RT) ps -aq --filter name=gaia2) 2>/dev/null
 	@echo "Killing port listeners..."
 	-sudo fuser -k 18789/tcp 8090/tcp 2>/dev/null
 	@echo "Done."
 
 clean: ## Remove all built images
 	@echo "Removing images..."
-	-@for img in $(ALL_IMAGES); do podman rmi $$img 2>/dev/null; done
+	-@for img in $(ALL_IMAGES); do $(CONTAINER_RT) rmi $$img 2>/dev/null; done
 	@echo "Done."

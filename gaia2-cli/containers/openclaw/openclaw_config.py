@@ -407,6 +407,67 @@ def build_auth_profiles(provider_setup: ProviderSetup) -> dict[str, Any]:
     return {}
 
 
+HARNESS_TOOL_PATH = "/opt/harness_tool.py"
+HARNESS_POLICY_PATH = "/opt/gaia2_harness_policy.json"
+WORKSPACE_BOOTSTRAP_FILES = ("SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md")
+
+
+def _load_harness_tool(env: Mapping[str, str]):
+    import importlib.util
+
+    path = first_nonempty(env.get("GAIA2_HARNESS_TOOL"), default=HARNESS_TOOL_PATH)
+    spec = importlib.util.spec_from_file_location("gaia2_harness_tool", path)
+    if spec is None or spec.loader is None:
+        raise SetupError(f"cannot load harness tool from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def apply_harness(config: dict[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
+    """Merge an external harness (GAIA2_HARNESS_DIR) into the OpenClaw config.
+
+    The overlay is validated against the policy baked into the image (keys the
+    benchmark depends on -- provider, auth, tool allowlist, gateway -- are not
+    overridable) and harness plugins are wired into plugins.load.paths.
+    Without GAIA2_HARNESS_DIR the config is returned unchanged.
+    """
+    harness_value = first_nonempty(env.get("GAIA2_HARNESS_DIR"))
+    if not harness_value:
+        return config
+    harness_dir = Path(harness_value)
+    tool = _load_harness_tool(env)
+    policy = tool.load_policy(
+        Path(first_nonempty(env.get("GAIA2_HARNESS_POLICY"), default=HARNESS_POLICY_PATH))
+    )
+    overlay = json.loads((harness_dir / "openclaw.overlay.json").read_text(encoding="utf-8"))
+    plugins_root = harness_dir / "plugins"
+    plugin_ids = sorted(
+        path.name
+        for path in (plugins_root.iterdir() if plugins_root.is_dir() else ())
+        if (path / "openclaw.plugin.json").is_file()
+    )
+    try:
+        tool.validate_overlay(overlay, policy, plugin_ids=set(plugin_ids))
+    except ValueError as exc:
+        raise SetupError(f"invalid harness overlay: {exc}") from exc
+    merged = tool.merge_overlay(config, overlay)
+    # The root entrypoint stages root-owned plugin copies (OpenClaw rejects
+    # plugins owned by other uids, e.g. a bind mount's host user).
+    stage_value = first_nonempty(env.get("GAIA2_HARNESS_STAGE_DIR"))
+    if stage_value and (Path(stage_value) / "plugins").is_dir():
+        plugins_root = Path(stage_value) / "plugins"
+    if plugin_ids:
+        plugins = merged.setdefault("plugins", {})
+        load = plugins.setdefault("load", {})
+        load["paths"] = [*load.get("paths", []), *(str(plugins_root / pid) for pid in plugin_ids)]
+        entries = plugins.setdefault("entries", {})
+        for plugin_id in plugin_ids:
+            entries[plugin_id] = {**entries.get(plugin_id, {}), "enabled": True}
+    return merged
+
+
 def generate_setup(env: Mapping[str, str], *, now: str | None = None) -> SetupOutputs:
     provider_setup = resolve_provider_setup(env)
     warnings: list[str] = []
@@ -416,7 +477,9 @@ def generate_setup(env: Mapping[str, str], *, now: str | None = None) -> SetupOu
         )
     return SetupOutputs(
         provider_setup=provider_setup,
-        openclaw_config=build_openclaw_config(provider_setup, env, now=now),
+        openclaw_config=apply_harness(
+            build_openclaw_config(provider_setup, env, now=now), env
+        ),
         auth_profiles=build_auth_profiles(provider_setup),
         warnings=tuple(warnings),
     )
@@ -458,9 +521,20 @@ def write_runtime_files(home: Path, outputs: SetupOutputs) -> None:
         json.dumps(outputs.auth_profiles, indent=2) + "\n",
     )
 
-    for name in ("SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md"):
-        atomic_write_text(home / name, "")
-    atomic_write_text(home / "HEARTBEAT.md", HEARTBEAT_CONTENT)
+    # An external harness's workspace files are rendered (placeholders filled)
+    # by the root entrypoint into GAIA2_HARNESS_STAGE_DIR/workspace.
+    stage_value = os.environ.get("GAIA2_HARNESS_STAGE_DIR", "")
+    staged = Path(stage_value) / "workspace" if stage_value else None
+    defaults = {name: "" for name in WORKSPACE_BOOTSTRAP_FILES}
+    defaults["HEARTBEAT.md"] = HEARTBEAT_CONTENT
+    for name in WORKSPACE_BOOTSTRAP_FILES:
+        source = staged / name if staged is not None else None
+        content = (
+            source.read_text(encoding="utf-8")
+            if source is not None and source.is_file()
+            else defaults[name]
+        )
+        atomic_write_text(home / name, content)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

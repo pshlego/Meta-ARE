@@ -209,3 +209,6 @@ eval_default_baseline/
 eval_gepa_cand3/
 eval_meta_harness_iter10_lean_rules/
 autosaddler/
+# Everything in the externalized OpenClaw harness is tracked (optimizers add
+# workspace files, skills with scripts/, and plugins there).
+!gaia2-cli/harness/openclaw/**

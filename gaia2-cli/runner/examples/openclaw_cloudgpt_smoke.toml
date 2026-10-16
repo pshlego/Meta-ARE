@@ -1,0 +1,57 @@
+# OpenClaw on the AutoSaddler GAIA2 smoke cases, with the CloudGPT (Azure
+# OpenAI) models used by AutoSaddler's meta_are_activesaddler_smoke_cloudgpt
+# config:
+#   task agent  gpt-5.5-20260424, xhigh reasoning
+#   judge       Llama-3.3-70B-Instruct
+#
+# provider = "azure" starts a host-side OpenAI-compatible proxy
+# (gaia2_runner/azure_proxy.py) that signs requests with an Azure CLI token, so
+# containers never see Azure credentials. Pick the Azure CLI profile with
+# [azure].config_dir or GAIA2_AZURE_CONFIG_DIR / AZURE_CONFIG_DIR.
+#
+# Judge and timing follow AutoSaddler's meta_are CloudGPT smoke settings:
+# time checks off (ARE disable_time_check=True), scenario duration overridden to
+# 7200 s (ARE max_scenario_duration) and a 1800 s wall-clock budget per scenario
+# (ARE --scenario_timeout). Simulated time advances with wall-clock time, which
+# matches ARE's simulated_generation_time_mode="measured".
+#
+# Stage the scenarios first (one directory per capability), e.g. with
+# AutoSaddler's scripts/gaia2_openclaw/provision_gaia2_cli_scenarios.py:
+#   datasets_local/gaia2_cli_smoke/<capability>/<scenario_id>.json
+#
+# Run (docker needs the docker group; use `sg docker -c "..."` if the current
+# login session predates the group membership):
+#   GAIA2_AZURE_CONFIG_DIR=/path/to/cloudgpt-account \
+#   uv run --project runner --python 3.12 gaia2-runner run-config \
+#       --config runner/examples/openclaw_cloudgpt_smoke.toml
+
+[target]
+dataset_root = "../../../datasets_local/gaia2_cli_smoke"
+
+[agent]
+image = "localhost/gaia2-oc:latest"
+runtime = "docker"
+provider = "azure"
+model = "gpt-5.5-20260424"
+base_url = "https://cloudgpt-openai.azure-api.net/openai/"
+reasoning_effort = "xhigh"
+thinking = "high"
+harness_dir = "../../harness/openclaw"
+
+[judge]
+provider = "azure"
+model = "Llama-3.3-70B-Instruct"
+base_url = "https://cloudgpt-openai.azure-api.net/openai/"
+time_check = "off"
+
+[azure]
+api_version = "2025-04-01-preview"
+
+[run]
+timeout = 1800
+max_scenario_duration = 7200
+health_timeout = 180
+concurrency = 3
+pass_at = 1
+output_dir = "../../../../working_dir/gaia2_openclaw/cloudgpt_smoke"
+log_level = "INFO"

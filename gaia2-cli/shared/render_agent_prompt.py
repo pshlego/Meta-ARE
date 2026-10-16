@@ -34,8 +34,14 @@ def render(
     output_prompt: str | None = None,
     output_approvals: str | None = None,
     exec_tool: str = "exec",
+    workspace_dir: str | None = None,
+    workspace_out: str | None = None,
 ) -> str:
     """Render the agent prompt from template + scenario.
+
+    When ``workspace_dir`` is given, every ``*.md`` in it is rendered with the
+    same placeholders into ``workspace_out`` (an external harness's workspace
+    bootstrap files).
 
     Returns the rendered prompt text.
     """
@@ -54,11 +60,22 @@ def render(
     messaging = [k for k in sorted(tools.keys()) if k in _MESSAGING_CLI_NAMES]
     messaging_tools = ", ".join(messaging) if messaging else "messages, chats"
 
+    def fill(template: str) -> str:
+        text = template.replace("{{TOOL_LIST}}", tool_list)
+        text = text.replace("{{MESSAGING_TOOLS}}", messaging_tools)
+        return text.replace("{{EXEC_TOOL}}", exec_tool)
+
     # Read and fill template
-    template = Path(template_path).read_text()
-    prompt = template.replace("{{TOOL_LIST}}", tool_list)
-    prompt = prompt.replace("{{MESSAGING_TOOLS}}", messaging_tools)
-    prompt = prompt.replace("{{EXEC_TOOL}}", exec_tool)
+    prompt = fill(Path(template_path).read_text())
+
+    if workspace_dir and workspace_out:
+        out_dir = Path(workspace_out)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir.chmod(0o755)
+        for source in sorted(Path(workspace_dir).glob("*.md")):
+            target = out_dir / source.name
+            target.write_text(fill(source.read_text()))
+            target.chmod(0o644)
 
     # Write prompt
     if output_prompt:
@@ -106,6 +123,13 @@ def main() -> None:
         default="exec",
         help="Tool name for shell execution (exec for OpenClaw, terminal for Hermes)",
     )
+    parser.add_argument(
+        "--workspace-dir",
+        help="Harness workspace dir whose *.md files are rendered too",
+    )
+    parser.add_argument(
+        "--workspace-out", help="Output dir for the rendered workspace files"
+    )
     args = parser.parse_args()
 
     prompt = render(
@@ -114,6 +138,8 @@ def main() -> None:
         output_prompt=args.output_prompt,
         output_approvals=args.output_approvals,
         exec_tool=args.exec_tool,
+        workspace_dir=args.workspace_dir,
+        workspace_out=args.workspace_out,
     )
 
     # If no output paths given, print to stdout

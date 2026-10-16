@@ -382,3 +382,102 @@ def test_exec_commands_time_out_after_a_minute_by_default() -> None:
     )
 
     assert outputs.openclaw_config["tools"]["exec"]["timeoutSec"] == 60
+
+
+# ---------------------------------------------------------------------------
+# External harness (GAIA2_HARNESS_DIR)
+# ---------------------------------------------------------------------------
+
+GAIA2_CLI = Path(__file__).resolve().parents[2]
+SEED_HARNESS = GAIA2_CLI / "harness" / "openclaw"
+HARNESS_ENV = {
+    "GAIA2_HARNESS_TOOL": str(GAIA2_CLI / "shared" / "harness_tool.py"),
+    "GAIA2_HARNESS_POLICY": str(
+        GAIA2_CLI / "harness" / "policy" / "openclaw_overlay_policy.json"
+    ),
+}
+COMPAT_ENV = {
+    "PROVIDER": "openai-compat",
+    "API_KEY": "k",
+    "MODEL": "m",
+    "BASE_URL": "http://127.0.0.1:1/v1",
+}
+
+
+def _harness_copy(tmp_path: Path) -> Path:
+    import shutil
+
+    target = tmp_path / "harness"
+    shutil.copytree(SEED_HARNESS, target)
+    return target
+
+
+def test_seed_harness_leaves_config_unchanged() -> None:
+    plain = openclaw_config.generate_setup(COMPAT_ENV, now=FIXED_NOW)
+    seeded = openclaw_config.generate_setup(
+        {**COMPAT_ENV, **HARNESS_ENV, "GAIA2_HARNESS_DIR": str(SEED_HARNESS)},
+        now=FIXED_NOW,
+    )
+    assert seeded.openclaw_config == plain.openclaw_config
+
+
+def test_seed_workspace_files_match_defaults() -> None:
+    assert (SEED_HARNESS / "workspace" / "HEARTBEAT.md").read_text() == (
+        openclaw_config.HEARTBEAT_CONTENT
+    )
+
+
+def test_harness_overlay_and_plugins_are_merged(tmp_path: Path) -> None:
+    harness = _harness_copy(tmp_path)
+    (harness / "openclaw.overlay.json").write_text(
+        json.dumps(
+            {
+                "messages": {"queue": {"mode": "followup"}},
+                "plugins": {"entries": {"guard": {"config": {"strict": True}}}},
+            }
+        )
+    )
+    plugin = harness / "plugins" / "guard"
+    plugin.mkdir()
+    (plugin / "openclaw.plugin.json").write_text(
+        json.dumps({"id": "guard", "configSchema": {"type": "object"}})
+    )
+    (plugin / "index.js").write_text("export default {id: 'guard', register() {}};\n")
+
+    config = openclaw_config.generate_setup(
+        {**COMPAT_ENV, **HARNESS_ENV, "GAIA2_HARNESS_DIR": str(harness)}, now=FIXED_NOW
+    ).openclaw_config
+
+    assert config["messages"]["queue"] == {"mode": "followup"}
+    assert config["messages"]["messagePrefix"] == "none"
+    assert config["plugins"]["load"]["paths"] == [str(plugin)]
+    assert config["plugins"]["entries"]["guard"] == {
+        "config": {"strict": True},
+        "enabled": True,
+    }
+    assert config["tools"]["allow"] == ["exec"]
+
+
+def test_harness_overlay_cannot_override_benchmark_keys(tmp_path: Path) -> None:
+    harness = _harness_copy(tmp_path)
+    (harness / "openclaw.overlay.json").write_text('{"tools": {"allow": ["exec", "read"]}}')
+    with pytest.raises(openclaw_config.SetupError, match="invalid harness overlay"):
+        openclaw_config.generate_setup(
+            {**COMPAT_ENV, **HARNESS_ENV, "GAIA2_HARNESS_DIR": str(harness)},
+            now=FIXED_NOW,
+        )
+
+
+def test_write_runtime_files_uses_staged_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = tmp_path / "stage"
+    (stage / "workspace").mkdir(parents=True)
+    (stage / "workspace" / "SOUL.md").write_text("Be precise.\n")
+    monkeypatch.setenv("GAIA2_HARNESS_STAGE_DIR", str(stage))
+    home = tmp_path / "home"
+    outputs = openclaw_config.generate_setup(COMPAT_ENV, now=FIXED_NOW)
+    openclaw_config.write_runtime_files(home, outputs)
+    assert (home / "SOUL.md").read_text() == "Be precise.\n"
+    assert (home / "TOOLS.md").read_text() == ""
+    assert (home / "HEARTBEAT.md").read_text() == openclaw_config.HEARTBEAT_CONTENT

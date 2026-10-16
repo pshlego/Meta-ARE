@@ -146,7 +146,9 @@ globalThis.fetch = async function(url, init) {
 
   // For LLM calls: retry on 429, 5xx, and network errors with exponential backoff
   const MAX_RETRIES = isLLMCall ? 5 : 0;
-  const FETCH_TIMEOUT_MS = isLLMCall ? 180000 : 0; // 180s timeout
+  // 180s per-request timeout by default; GAIA2_LLM_FETCH_TIMEOUT_MS overrides it
+  // for slow high-reasoning backends.
+  const FETCH_TIMEOUT_MS = isLLMCall ? (Number(process.env.GAIA2_LLM_FETCH_TIMEOUT_MS) || 180000) : 0;
   let resp, text, latencyMs;
 
   for (let attempt = 0; ; attempt++) {

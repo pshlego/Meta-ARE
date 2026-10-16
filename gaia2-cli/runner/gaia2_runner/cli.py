@@ -57,7 +57,7 @@ from gaia2_runner.trace_viewer import (
 )
 
 if TYPE_CHECKING:
-    from gaia2_runner.config import RunnerTomlConfig
+    from gaia2_runner.config import AzureConfig, RunnerTomlConfig
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -146,6 +146,9 @@ class ScenarioExecutionConfig:
     judge_base_url: str | None
     extra_volumes: tuple[str, ...] = ()
     launcher_type: str = "podman"
+    max_scenario_duration: int | None = None
+    # Recorded in every result.json (e.g. the external harness digest).
+    result_metadata: JsonDict = field(default_factory=dict)
 
     def create_runner(self, adapter_port: int) -> ContainerRunner:
         """Create a runner with a local LocalLauncher.
@@ -184,7 +187,8 @@ class ScenarioExecutionConfig:
             gateway_port=gateway_port,
             carry_in=carry_in,
             carry_out=carry_out,
-            result_metadata=result_metadata,
+            result_metadata={**self.result_metadata, **(result_metadata or {})} or None,
+            max_scenario_duration=self.max_scenario_duration,
         )
 
     def run_scenario(
@@ -1419,6 +1423,43 @@ def _finalize_passes(
     _print_aggregate_summary(per_run_stats, output_dir)
 
 
+AZURE_PROVIDER = "azure"
+
+# Host env vars forwarded into agent containers when set (timeouts for slow,
+# high-reasoning backends; see launch.mjs and openclaw_config.py).
+_HOST_FORWARDED_CONTAINER_ENV = ("AGENT_TIMEOUT_SECONDS", "GAIA2_LLM_FETCH_TIMEOUT_MS")
+
+
+def _azure_proxy(azure: "AzureConfig | None"):
+    """Start (once per process) the Azure OpenAI proxy and return it."""
+    from .azure_proxy import AzureProxySettings, AzureTokenError, shared_proxy
+
+    settings = AzureProxySettings.from_env()
+    if azure is not None:
+        if azure.config_dir:
+            settings.config_dir = azure.config_dir
+        if azure.resource:
+            settings.resource = azure.resource
+        if azure.api_version:
+            settings.api_version = azure.api_version
+        if azure.port is not None:
+            settings.port = azure.port
+        if azure.upstream_timeout is not None:
+            settings.upstream_timeout_seconds = azure.upstream_timeout
+    try:
+        return shared_proxy(settings)
+    except AzureTokenError as exc:
+        raise click.UsageError(f"Azure provider unavailable: {exc}") from exc
+
+
+def _azure_route(route_cls, endpoint: str | None, reasoning_effort: str | None):
+    from .azure_proxy import CLOUDGPT_ENDPOINT
+
+    return route_cls(
+        endpoint=endpoint or CLOUDGPT_ENDPOINT, reasoning_effort=reasoning_effort
+    )
+
+
 def _build_execution_config(
     *,
     image: str,
@@ -1441,6 +1482,11 @@ def _build_execution_config(
     time_speed: float | None,
     idle_timeout: float | None = None,
     context_window: int | None = None,
+    reasoning_effort: str | None = None,
+    azure: "AzureConfig | None" = None,
+    judge_time_check: str | None = None,
+    max_scenario_duration: int | None = None,
+    harness_dir: str | None = None,
 ) -> tuple[
     ScenarioExecutionConfig,
     str | None,
@@ -1464,35 +1510,108 @@ def _build_execution_config(
     ) = _resolve_judge_config(
         judge_model, judge_provider, judge_base_url, judge_api_key
     )
+    reasoning_effort = (
+        reasoning_effort or os.environ.get("GAIA2_AGENT_REASONING_EFFORT") or None
+    )
+
+    # provider = "azure" routes the agent and/or judge through the host-side
+    # Azure OpenAI proxy: containers see an OpenAI-compatible endpoint on
+    # 127.0.0.1 and never hold Azure credentials. The resolved_* values keep
+    # the user-facing provider/endpoint for run metadata.
+    container_provider = resolved_provider
+    container_base_url = base_url
+    container_api_key = api_key
+    container_judge_provider = resolved_judge_provider
+    container_judge_base_url = resolved_judge_base_url
+    container_judge_api_key = resolved_judge_api_key
+    if AZURE_PROVIDER in (resolved_provider, resolved_judge_provider):
+        from .azure_proxy import PROXY_API_KEY, AzureRoute
+
+        proxy = _azure_proxy(azure)
+        if resolved_provider == AZURE_PROVIDER:
+            proxy.add_route(
+                resolved_model or "",
+                _azure_route(AzureRoute, base_url, reasoning_effort),
+            )
+            container_provider = "openai-compat"
+            container_base_url = proxy.base_url
+            container_api_key = PROXY_API_KEY
+        if resolved_judge_provider == AZURE_PROVIDER:
+            proxy.add_route(
+                resolved_judge_model,
+                _azure_route(AzureRoute, resolved_judge_base_url, None),
+            )
+            container_judge_provider = "openai-compat"
+            container_judge_base_url = proxy.base_url
+            container_judge_api_key = PROXY_API_KEY
+
+    container_env = _build_container_env(
+        image,
+        container_base_url,
+        thinking,
+        notification_mode,
+        time_speed,
+        idle_timeout=idle_timeout,
+        judge_model=resolved_judge_model,
+        judge_provider=container_judge_provider,
+        judge_base_url=container_judge_base_url,
+        judge_api_key=container_judge_api_key,
+        judge_prompt_version=judge_prompt_version,
+        judge_extra_body=judge_extra_body,
+        context_window=context_window,
+    )
+    judge_time_check = (
+        judge_time_check or os.environ.get("GAIA2_JUDGE_TIME_CHECK") or "enforce"
+    )
+    if judge_time_check not in ("enforce", "off"):
+        raise click.UsageError("judge time check must be 'enforce' or 'off'")
+    if judge_time_check == "off":
+        container_env["GAIA2_JUDGE_TIME_CHECK"] = "off"
+    if reasoning_effort and resolved_provider != AZURE_PROVIDER:
+        # launch.mjs forwards REASONING_EFFORT to chat-completions backends.
+        container_env["REASONING_EFFORT"] = reasoning_effort
+    for key in _HOST_FORWARDED_CONTAINER_ENV:
+        if os.environ.get(key):
+            container_env[key] = os.environ[key]
+
+    # External OpenClaw harness: validated + digested on the host, mounted
+    # read-only and re-verified by the container entrypoint.
+    result_metadata: JsonDict = {}
+    if harness_dir:
+        from .container_env import detect_profile
+        from .harness import CONTAINER_HARNESS_DIR, check_and_digest
+
+        if detect_profile(image).agent_home is None:
+            raise click.UsageError("--harness-dir is only supported for OpenClaw images")
+        harness_path = Path(harness_dir).expanduser().resolve()
+        try:
+            harness_digest = check_and_digest(harness_path)
+        except ValueError as exc:
+            raise click.UsageError(f"Invalid harness {harness_path}: {exc}") from exc
+        volumes = (*volumes, f"{harness_path}:{CONTAINER_HARNESS_DIR}:ro")
+        container_env["GAIA2_HARNESS_DIR"] = CONTAINER_HARNESS_DIR
+        container_env["GAIA2_HARNESS_DIGEST"] = harness_digest
+        result_metadata = {
+            "harness_dir": str(harness_path),
+            "harness_digest": harness_digest,
+        }
 
     execution_config = ScenarioExecutionConfig(
         image=image,
         runtime=runtime,
         timeout=timeout,
         health_timeout=health_timeout,
-        container_env=_build_container_env(
-            image,
-            base_url,
-            thinking,
-            notification_mode,
-            time_speed,
-            idle_timeout=idle_timeout,
-            judge_model=resolved_judge_model,
-            judge_provider=resolved_judge_provider,
-            judge_base_url=resolved_judge_base_url,
-            judge_api_key=resolved_judge_api_key,
-            judge_prompt_version=judge_prompt_version,
-            judge_extra_body=judge_extra_body,
-            context_window=context_window,
-        ),
-        provider=resolved_provider,
+        container_env=container_env,
+        provider=container_provider,
         model=resolved_model,
-        api_key=api_key,
+        api_key=container_api_key,
         judge_model=resolved_judge_model,
         judge_provider=resolved_judge_provider,
         judge_base_url=resolved_judge_base_url,
         extra_volumes=volumes,
         launcher_type=runtime,
+        max_scenario_duration=max_scenario_duration,
+        result_metadata=result_metadata,
     )
 
     return (
@@ -2723,6 +2842,11 @@ def run_config(config_path: str, retry: bool, dry_run: bool) -> None:
             time_speed=config.run.time_speed,
             idle_timeout=config.run.idle_timeout,
             context_window=config.agent.context_window,
+            reasoning_effort=config.agent.reasoning_effort,
+            azure=config.azure,
+            judge_time_check=config.judge.time_check,
+            max_scenario_duration=config.run.max_scenario_duration,
+            harness_dir=config.agent.harness_dir,
         )
 
         run_config_base: JsonDict = {
@@ -2804,6 +2928,11 @@ def run_config(config_path: str, retry: bool, dry_run: bool) -> None:
             time_speed=config.run.time_speed,
             idle_timeout=config.run.idle_timeout,
             context_window=config.agent.context_window,
+            reasoning_effort=config.agent.reasoning_effort,
+            azure=config.azure,
+            judge_time_check=config.judge.time_check,
+            max_scenario_duration=config.run.max_scenario_duration,
+            harness_dir=config.agent.harness_dir,
         )
 
         run_config_base = {

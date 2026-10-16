@@ -63,6 +63,9 @@ class TargetConfig:
         return self.dataset is not None
 
 
+REASONING_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
+
+
 @dataclass(frozen=True, slots=True)
 class AgentConfig:
     image: str
@@ -74,6 +77,12 @@ class AgentConfig:
     thinking: str
     volumes: tuple[str, ...]
     context_window: int | None = None
+    # Reasoning effort sent to the model (e.g. "xhigh"). With provider "azure"
+    # it is enforced by the host-side Azure proxy; otherwise it is exported to
+    # the container as REASONING_EFFORT.
+    reasoning_effort: str | None = None
+    # External OpenClaw harness directory (gaia2-cli/harness/openclaw layout).
+    harness_dir: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +97,8 @@ class JudgeConfig:
     # {"chat_template_kwargs": {"enable_thinking": true}} — without it, the
     # judge model returns content=null on every verdict.
     extra_body: dict | None = None
+    # "off" mirrors ARE's disable_time_check=True (log timing, never fail).
+    time_check: str = "enforce"
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +115,20 @@ class RunConfig:
     notification_mode: str
     time_speed: float | None
     idle_timeout: float | None = None
+    # ARE's max_scenario_duration: replaces the declared scenario duration and
+    # makes [run].timeout the exact wall-clock budget.
+    max_scenario_duration: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AzureConfig:
+    """Settings for the host-side Azure OpenAI proxy (provider = "azure")."""
+
+    config_dir: str | None = None
+    resource: str | None = None
+    api_version: str | None = None
+    port: int | None = None
+    upstream_timeout: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +138,7 @@ class RunnerTomlConfig:
     agent: AgentConfig
     judge: JudgeConfig
     run: RunConfig
+    azure: AzureConfig | None = None
 
 
 def _as_table(value: Any, name: str) -> dict[str, Any]:
@@ -326,6 +352,7 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
     agent_table = _as_table(raw.get("agent"), "agent")
     judge_table = _as_table(raw.get("judge"), "judge")
     run_table = _as_table(raw.get("run"), "run")
+    azure_table = _as_table(raw.get("azure"), "azure")
 
     if "endpoint" in judge_table:
         raise click.UsageError("[judge].endpoint has been renamed to [judge].base_url")
@@ -363,6 +390,8 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
             "thinking",
             "volumes",
             "context_window",
+            "reasoning_effort",
+            "harness_dir",
         },
     )
     _validate_allowed_keys(
@@ -376,6 +405,7 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
             "api_key_env",
             "prompt_version",
             "extra_body",
+            "time_check",
         },
     )
     _validate_allowed_keys(
@@ -394,6 +424,18 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
             "notification_mode",
             "time_speed",
             "idle_timeout",
+            "max_scenario_duration",
+        },
+    )
+    _validate_allowed_keys(
+        azure_table,
+        table_name="azure",
+        allowed_keys={
+            "config_dir",
+            "resource",
+            "api_version",
+            "port",
+            "upstream_timeout",
         },
     )
 
@@ -510,6 +552,13 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
         agent_table.get("context_window"), "[agent].context_window"
     )
     api_key = _resolve_secret(agent_table, section_name="agent")
+    reasoning_effort = _as_optional_str(
+        agent_table.get("reasoning_effort"), "[agent].reasoning_effort"
+    )
+    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
+        raise click.UsageError(
+            f"[agent].reasoning_effort must be one of: {', '.join(REASONING_EFFORTS)}"
+        )
 
     profile = detect_profile(image)
     if profile.requires_agent_llm and (not provider or not model):
@@ -538,6 +587,14 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
         thinking=thinking,
         volumes=volumes,
         context_window=context_window,
+        reasoning_effort=reasoning_effort,
+        harness_dir=_resolve_path(
+            _as_optional_str(agent_table.get("harness_dir"), "[agent].harness_dir"),
+            base_dir=base_dir,
+            name="[agent].harness_dir",
+            must_exist=True,
+            must_be_dir=True,
+        ),
     )
 
     judge = JudgeConfig(
@@ -550,6 +607,12 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
         ),
         extra_body=_as_optional_dict(
             judge_table.get("extra_body"), "[judge].extra_body"
+        ),
+        time_check=_as_choice(
+            judge_table.get("time_check"),
+            "[judge].time_check",
+            choices=("enforce", "off"),
+            default="enforce",
         ),
     )
 
@@ -597,6 +660,9 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
         idle_timeout=_as_optional_float(
             run_table.get("idle_timeout"), "[run].idle_timeout"
         ),
+        max_scenario_duration=_as_optional_int(
+            run_table.get("max_scenario_duration"), "[run].max_scenario_duration"
+        ),
     )
 
     if run.timeout < 1:
@@ -611,6 +677,8 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
         raise click.UsageError("[run].pass_at must be >= 1")
     if run.time_speed is not None and run.time_speed <= 0:
         raise click.UsageError("[run].time_speed must be > 0")
+    if run.max_scenario_duration is not None and run.max_scenario_duration < 1:
+        raise click.UsageError("[run].max_scenario_duration must be >= 1")
     if run.idle_timeout is not None and run.idle_timeout <= 0:
         raise click.UsageError("[run].idle_timeout must be > 0")
     if target.is_single_scenario and target.limit is not None:
@@ -629,10 +697,36 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
             "carried between scenarios is checkpointed"
         )
 
+    azure_port = _as_optional_int(azure_table.get("port"), "[azure].port")
+    if azure_port is not None and not 0 <= azure_port <= 65535:
+        raise click.UsageError("[azure].port must be between 0 and 65535")
+    azure = (
+        AzureConfig(
+            config_dir=_resolve_path(
+                _as_optional_str(azure_table.get("config_dir"), "[azure].config_dir"),
+                base_dir=base_dir,
+                name="[azure].config_dir",
+                must_exist=True,
+                must_be_dir=True,
+            ),
+            resource=_as_optional_str(azure_table.get("resource"), "[azure].resource"),
+            api_version=_as_optional_str(
+                azure_table.get("api_version"), "[azure].api_version"
+            ),
+            port=azure_port,
+            upstream_timeout=_as_optional_float(
+                azure_table.get("upstream_timeout"), "[azure].upstream_timeout"
+            ),
+        )
+        if azure_table
+        else None
+    )
+
     return RunnerTomlConfig(
         config_path=str(cfg_path),
         target=target,
         agent=agent,
         judge=judge,
         run=run,
+        azure=azure,
     )
