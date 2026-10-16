@@ -7,8 +7,8 @@ arm: ours
 meta_are_repo: /mnt/data2/v-parksungho_icml/Meta-ARE        # feat/gaia2-openclaw-envharness
 seed_harness_dir: gaia2-cli/harness/openclaw                 # only skills/ evolves
 harness_policy: gaia2-cli/harness/policy/openclaw_overlay_policy.json
-image: localhost/gaia2-oc:envh-ff046a123b5f                  # built with the env-rules hook (4-3)
-image_id: sha256:5f6cdfd30075c61a423ef76e6373b49fe519d62c9d2c6a5aedfb011c79836982
+image: localhost/gaia2-oc:envh-c12882b530bd                  # env-rules hook incl. per-subcommand counter
+image_id: sha256:0e16ffd2d02f0ab8f820524a76cc58f27cc006432ac83b88c49a6222b76e40a8
 container_runtime: docker
 docker_group: docker
 
