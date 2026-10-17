@@ -1,0 +1,252 @@
+{
+  "schema_version": "gaia2-openclaw-overlay-policy/v1",
+  "description": "EnvHarness skill-bank runs: the AutoSaddler overlay policy with skill limits sized for a whole bank rendered into skills/ (OpenClaw lists up to 150 skills / 30000 chars by default). Paths an external OpenClaw harness may set in openclaw.overlay.json. Everything else (models, auth, gateway, hooks, tools.allow/exec security, agents.defaults.model/workspace/thinkingDefault, plugins.load/allow, skills.load) is fixed by the benchmark. Keys follow the OpenClaw 2026.4.1 configuration reference; OpenClaw rejects unknown keys at startup.",
+  "limits": {
+    "markdown_file_chars": 20000,
+    "markdown_total_chars": 300000,
+    "max_skills": 128,
+    "max_plugins": 4,
+    "plugin_file_bytes": 65536
+  },
+  "allowed": [
+    {
+      "path": "agents.defaults.timeoutSeconds",
+      "type": "integer",
+      "min": 60,
+      "max": 7200
+    },
+    {
+      "path": "agents.defaults.bootstrapMaxChars",
+      "type": "integer",
+      "min": 1000,
+      "max": 100000
+    },
+    {
+      "path": "agents.defaults.bootstrapTotalMaxChars",
+      "type": "integer",
+      "min": 5000,
+      "max": 300000
+    },
+    {
+      "path": "agents.defaults.compaction.mode",
+      "type": "string",
+      "enum": [
+        "default",
+        "safeguard"
+      ]
+    },
+    {
+      "path": "agents.defaults.compaction.reserveTokensFloor",
+      "type": "integer",
+      "min": 0,
+      "max": 200000
+    },
+    {
+      "path": "agents.defaults.compaction.identifierPolicy",
+      "type": "string",
+      "enum": [
+        "strict",
+        "off",
+        "custom"
+      ]
+    },
+    {
+      "path": "agents.defaults.compaction.identifierInstructions",
+      "type": "string"
+    },
+    {
+      "path": "agents.defaults.compaction.postCompactionSections",
+      "type": "array"
+    },
+    {
+      "path": "agents.defaults.compaction.memoryFlush.enabled",
+      "type": "boolean"
+    },
+    {
+      "path": "agents.defaults.compaction.memoryFlush.softThresholdTokens",
+      "type": "integer",
+      "min": 0,
+      "max": 200000
+    },
+    {
+      "path": "agents.defaults.compaction.memoryFlush.systemPrompt",
+      "type": "string"
+    },
+    {
+      "path": "agents.defaults.compaction.memoryFlush.prompt",
+      "type": "string"
+    },
+    {
+      "path": "agents.defaults.contextPruning.mode",
+      "type": "string",
+      "enum": [
+        "off",
+        "cache-ttl"
+      ]
+    },
+    {
+      "path": "agents.defaults.contextPruning.ttl",
+      "type": "string"
+    },
+    {
+      "path": "agents.defaults.contextPruning.keepLastAssistants",
+      "type": "integer",
+      "min": 0,
+      "max": 100
+    },
+    {
+      "path": "agents.defaults.contextPruning.softTrimRatio",
+      "type": "number",
+      "min": 0,
+      "max": 1
+    },
+    {
+      "path": "agents.defaults.contextPruning.hardClearRatio",
+      "type": "number",
+      "min": 0,
+      "max": 1
+    },
+    {
+      "path": "agents.defaults.contextPruning.minPrunableToolChars",
+      "type": "integer",
+      "min": 0,
+      "max": 10000000
+    },
+    {
+      "path": "agents.defaults.contextPruning.softTrim.maxChars",
+      "type": "integer",
+      "min": 0,
+      "max": 1000000
+    },
+    {
+      "path": "agents.defaults.contextPruning.softTrim.headChars",
+      "type": "integer",
+      "min": 0,
+      "max": 1000000
+    },
+    {
+      "path": "agents.defaults.contextPruning.softTrim.tailChars",
+      "type": "integer",
+      "min": 0,
+      "max": 1000000
+    },
+    {
+      "path": "agents.defaults.contextPruning.hardClear.enabled",
+      "type": "boolean"
+    },
+    {
+      "path": "agents.defaults.contextPruning.hardClear.placeholder",
+      "type": "string"
+    },
+    {
+      "path": "messages.queue.mode",
+      "type": "string",
+      "enum": [
+        "steer",
+        "followup",
+        "collect",
+        "steer-backlog",
+        "steer+backlog",
+        "queue",
+        "interrupt"
+      ]
+    },
+    {
+      "path": "messages.queue.debounceMs",
+      "type": "integer",
+      "min": 0,
+      "max": 60000
+    },
+    {
+      "path": "messages.queue.cap",
+      "type": "integer",
+      "min": 1,
+      "max": 200
+    },
+    {
+      "path": "messages.queue.drop",
+      "type": "string",
+      "enum": [
+        "old",
+        "new",
+        "summarize"
+      ]
+    },
+    {
+      "path": "tools.exec.timeoutSec",
+      "type": "integer",
+      "min": 5,
+      "max": 600
+    },
+    {
+      "path": "tools.loopDetection.enabled",
+      "type": "boolean"
+    },
+    {
+      "path": "tools.loopDetection.historySize",
+      "type": "integer",
+      "min": 1,
+      "max": 1000
+    },
+    {
+      "path": "tools.loopDetection.warningThreshold",
+      "type": "integer",
+      "min": 1,
+      "max": 1000
+    },
+    {
+      "path": "tools.loopDetection.criticalThreshold",
+      "type": "integer",
+      "min": 1,
+      "max": 1000
+    },
+    {
+      "path": "tools.loopDetection.globalCircuitBreakerThreshold",
+      "type": "integer",
+      "min": 1,
+      "max": 1000
+    },
+    {
+      "path": "tools.loopDetection.detectors.genericRepeat",
+      "type": "boolean"
+    },
+    {
+      "path": "tools.loopDetection.detectors.knownPollNoProgress",
+      "type": "boolean"
+    },
+    {
+      "path": "tools.loopDetection.detectors.pingPong",
+      "type": "boolean"
+    },
+    {
+      "path": "skills.allowBundled",
+      "type": "array"
+    },
+    {
+      "path": "skills.entries.*.enabled",
+      "type": "boolean"
+    },
+    {
+      "path": "skills.limits.maxSkillsInPrompt",
+      "type": "integer",
+      "min": 0,
+      "max": 200
+    },
+    {
+      "path": "skills.limits.maxSkillsPromptChars",
+      "type": "integer",
+      "min": 0,
+      "max": 100000
+    },
+    {
+      "path": "plugins.entries.*.config",
+      "type": "object",
+      "plugin_scoped": true
+    },
+    {
+      "path": "plugins.entries.*.hooks.allowPromptInjection",
+      "type": "boolean",
+      "plugin_scoped": true
+    }
+  ]
+}
