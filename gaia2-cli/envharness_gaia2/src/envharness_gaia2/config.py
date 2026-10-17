@@ -1,4 +1,4 @@
-"""Strict YAML schema for an envharness-gaia2 co-evolution run."""
+"""Strict YAML schema for an envharness-gaia2 run (corpus -> bank -> eval, optionally over rounds)."""
 
 from __future__ import annotations
 
@@ -13,10 +13,9 @@ import yaml
 
 from envharness_gaia2.gaia2_run import CaseRef, RunSettings, sha256_file, wrap_docker_group
 
-SCHEMA_VERSION = "envharness-gaia2/v1"
+SCHEMA_VERSION = "envharness-gaia2/v2"
 _SECTIONS: dict[str, set[str] | None] = {
     "schema_version": None,
-    "arm": None,
     "meta_are_repo": None,
     "seed_harness_dir": None,
     "harness_policy": None,
@@ -34,10 +33,12 @@ _SECTIONS: dict[str, set[str] | None] = {
         "scenario_timeout_seconds", "max_scenario_duration", "health_timeout_seconds",
         "process_completion_grace_seconds", "max_concurrent", "infrastructure_retries", "eval_repetitions",
     },
-    "optimizer_llm": {"model", "api_base", "wire_api", "reasoning_effort"},
-    "envrigger": {"k_per_candidate", "max_k", "target_band", "skip_passthrough_candidates", "allow_setup"},
-    "coevolution": {"rounds", "task_selection", "max_new_skills_per_batch", "max_skills", "pairs_per_task"},
-    "budget": {"max_rollouts", "max_iterations"},
+    "optimizer_llm": {"model", "api_base", "wire_api", "reasoning_effort", "induce_reasoning_effort"},
+    "envrigger": {"k_per_candidate", "max_k", "target_band", "skip_passthrough_candidates"},
+    "bank": {"max_pairs_per_task", "max_baseline_rollouts", "tier2_last_only", "dedup_titles", "embed_model",
+             "concurrency", "orig_seed"},
+    "coevolution": {"rounds"},
+    "budget": {"max_rollouts"},
     "storage": {"run_root"},
 }
 
@@ -52,13 +53,24 @@ class OptimizerLLMConfig:
     api_base: str
     wire_api: str
     reasoning_effort: str | None
+    induce_reasoning_effort: str | None
+
+
+@dataclass(frozen=True)
+class BankConfig:
+    max_pairs_per_task: int
+    max_baseline_rollouts: int | None
+    tier2_last_only: bool
+    dedup_titles: bool
+    embed_model: str
+    concurrency: int
+    orig_seed: int
 
 
 @dataclass(frozen=True)
 class Config:
     path: Path
     raw: dict[str, Any]
-    arm: str
     meta_are_repo: Path
     seed_harness_dir: Path
     harness_policy: Path
@@ -75,15 +87,9 @@ class Config:
     max_k: int
     target_band: tuple[float, float]
     skip_passthrough_candidates: bool
-    allow_setup: bool
+    bank: BankConfig
     rounds: int
-    batch_size: int
-    selection_seed: int
-    max_new_skills_per_batch: int
-    max_skills: int
-    pairs_per_task: int
     max_rollouts: int
-    max_iterations: int
     run_root: Path
 
     @property
@@ -108,8 +114,6 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
             raise ConfigError(f"[{section}] must have exactly {sorted(keys)}; got {sorted(value or {})}")
     if raw["schema_version"] != SCHEMA_VERSION:
         raise ConfigError(f"schema_version must be {SCHEMA_VERSION}")
-    if raw["arm"] not in ("ours", "orig"):
-        raise ConfigError("arm must be ours or orig")
     if raw["container_runtime"] != "docker":
         raise ConfigError("container_runtime must be docker")
 
@@ -176,19 +180,16 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
     opt = raw["optimizer_llm"]
     if opt["wire_api"] not in ("chat_completions", "responses"):
         raise ConfigError("optimizer_llm.wire_api must be chat_completions or responses")
-    env, coevo, budget = raw["envrigger"], raw["coevolution"], raw["budget"]
+    env, bank, budget = raw["envrigger"], raw["bank"], raw["budget"]
     band = tuple(float(x) for x in env["target_band"])
-    if len(band) != 2 or not 0.0 <= band[0] <= band[1] <= 1.0:
-        raise ConfigError("envrigger.target_band must be [lo, hi] within [0, 1]")
-    if env["allow_setup"]:
-        raise ConfigError("allow_setup is not supported (Setup/S0 is an optional extension)")
-    selection = coevo["task_selection"]
-    if selection.get("type") != "epoch_shuffled" or set(selection) != {"type", "batch_size", "seed"}:
-        raise ConfigError("coevolution.task_selection must be {type: epoch_shuffled, batch_size, seed}")
+    if len(band) != 2 or not 0.0 <= band[0] < band[1] <= 1.0:
+        raise ConfigError("envrigger.target_band must be [lo, hi] with 0 <= lo < hi <= 1 (DifficultyZone)")
+    rounds = int(raw["coevolution"]["rounds"])
+    if rounds < 1:
+        raise ConfigError("coevolution.rounds must be >= 1 (1 = the original single pass)")
     return Config(
         path=path,
         raw=raw,
-        arm=raw["arm"],
         meta_are_repo=repo,
         seed_harness_dir=seed,
         harness_policy=policy,
@@ -200,20 +201,23 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
         train_cases=train,
         dev_cases=dev,
         dataset_digest=dataset_digest,
-        optimizer=OptimizerLLMConfig(opt["model"], opt["api_base"], opt["wire_api"], opt["reasoning_effort"]),
+        optimizer=OptimizerLLMConfig(opt["model"], opt["api_base"], opt["wire_api"], opt["reasoning_effort"],
+                                     opt["induce_reasoning_effort"]),
         k=int(env["k_per_candidate"]),
         max_k=int(env["max_k"]),
         target_band=band,  # type: ignore[arg-type]
         skip_passthrough_candidates=bool(env["skip_passthrough_candidates"]),
-        allow_setup=False,
-        rounds=int(coevo["rounds"]),
-        batch_size=int(selection["batch_size"]),
-        selection_seed=int(selection["seed"]),
-        max_new_skills_per_batch=int(coevo["max_new_skills_per_batch"]),
-        max_skills=int(coevo["max_skills"]),
-        pairs_per_task=int(coevo["pairs_per_task"]),
+        bank=BankConfig(
+            max_pairs_per_task=int(bank["max_pairs_per_task"]),
+            max_baseline_rollouts=None if bank["max_baseline_rollouts"] is None else int(bank["max_baseline_rollouts"]),
+            tier2_last_only=bool(bank["tier2_last_only"]),
+            dedup_titles=bool(bank["dedup_titles"]),
+            embed_model=str(bank["embed_model"]),
+            concurrency=int(bank["concurrency"]),
+            orig_seed=int(bank["orig_seed"]),
+        ),
+        rounds=rounds,
         max_rollouts=int(budget["max_rollouts"]),
-        max_iterations=int(budget["max_iterations"]),
         run_root=p(raw["storage"]["run_root"]),
     )
 

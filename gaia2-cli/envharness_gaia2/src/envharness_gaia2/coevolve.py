@@ -1,28 +1,34 @@
-"""Co-evolve an OpenClaw skill bank with EnvHarness environment variations on GAIA2.
+"""EnvHarness on GAIA2 with OpenClaw: corpus -> skill bank -> eval, over co-evolution rounds.
 
     uv run python -m envharness_gaia2.coevolve --config configs/smoke_cloudgpt.yaml --run-id <id> [--resume]
 
-For each round, the training tasks are shuffled into batches. Per batch:
-EnvRigger (baseline K -> propose rules -> K rollouts -> decide, up to max_k)
-runs task by task with the current harness snapshot (seed + rendered skills);
-skills are induced from the batch's traces (cascade paired-diff), up to
-``max_new_skills_per_batch`` are added to the bank (consolidated above
-``max_skills``), and the bank is rendered into the next snapshot. A batch is
-committed with a DONE marker, so ``--resume`` continues after the last
-finished batch. Finally seed and final harnesses are evaluated on dev.
+Mirrors an envharness ``experiments/<bench>/reproduce.py``:
+
+* Stage 1 (corpus): the original Orchestrator, one run per train task
+  (``run_harness.py --n-tasks 1``), baseline K -> propose -> K rollouts ->
+  decide up to ``max_k``.
+* Stage 2 (banks): ``ours`` from the round's traces (SWE-bench cascade build),
+  ``orig`` from round 1's baseline traces (intra-baseline build).
+* Stage 3 (eval): nobank / orig / ours_r<r> on the held-out manifest, one
+  attempt per instance; banks are rendered whole into OpenClaw ``skills/``.
+
+Co-evolution (``coevolution.rounds`` > 1) chains original parts only: round r's
+student carries ``bank_{r-1}`` in its skills, and round r's bank adds the new
+lessons of the augment-mode build (``--existing-bank``). ``rounds: 1`` is the
+original single pass. Tasks, round banks and eval arms commit with DONE
+markers, so ``--resume`` continues where the run stopped.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import random
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from envharness.agents.harness_agent import NoopHarnessAgent
 from envharness.orchestration.budget import CappedAdaptive
 from envharness.orchestration.objectives import DifficultyZone
 from envharness.orchestration.orchestrator import OrchestratorConfig
@@ -30,24 +36,21 @@ from envharness.orchestration.runner import EnvSpec, PolicySpec
 from envharness.orchestration.storage import TraceStore
 
 from envharness_gaia2 import PROMPTS_DIR
+from envharness_gaia2.bank import build, dedup_by_title, load_bank, openai_embedder, plan_ours, plan_orig, save_bank
 from envharness_gaia2.config import Config, load_config
 from envharness_gaia2.designer import Gaia2HarnessAgent, make_client
 from envharness_gaia2.evaluate import evaluate
 from envharness_gaia2.gaia2_run import Gaia2Runner
-from envharness_gaia2.induce import induce, select_units
 from envharness_gaia2.orchestrator import ENV_IMPORT_PATH, ENV_STATE_SCHEMA, EXEC_TOOL_SCHEMA, Gaia2Orchestrator
-from envharness_gaia2.skills import (
-    SkillRenderError,
-    consolidate,
-    load_bank,
-    render,
-    save_bank,
-    select_new_skills,
-)
+from envharness_gaia2.skills import render
 
 TASK_DESCRIPTION = (
-    "GAIA2 personal-assistant scenario solved by OpenClaw (fixed harness; only its skills evolve). "
-    "The user request is the 'Task:' line at the start of each trajectory.\n\n"
+    "Mutate GAIA2 train scenarios where the OpenClaw Policy is currently weak; only emit "
+    "mutations that exercise failure-recovery skills WITHOUT shifting the env's surface "
+    "presentation. The induced memory items should capture transferable assistant "
+    "techniques (app CLI usage, verification, disambiguation) that close the gap on "
+    "held-out GAIA2 scenarios. The user request is the 'Task:' line at the start of "
+    "each trajectory."
 )
 
 
@@ -62,15 +65,9 @@ def harness_digest(cfg: Config, harness_dir: Path) -> str:
     ).stdout.strip()
 
 
-def epoch_batches(n: int, batch_size: int, seed: int) -> list[list[int]]:
-    order = list(range(n))
-    random.Random(seed).shuffle(order)
-    return [order[i : i + batch_size] for i in range(0, n, batch_size)]
-
-
-class CoEvolution:
+class Pipeline:
     def __init__(self, cfg: Config, run_dir: Path, *, gaia2: Gaia2Runner | None = None,
-                 designer_client=None, induce_client=None) -> None:
+                 designer_client=None, induce_client=None, embedder=None) -> None:
         self.cfg = cfg
         self.run_dir = run_dir
         self.gaia2 = gaia2 or Gaia2Runner(
@@ -80,180 +77,158 @@ class CoEvolution:
             cfg.optimizer, log_path=run_dir / "designer_calls.jsonl", role="designer"
         )
         self.induce_client = induce_client or make_client(
-            cfg.optimizer, log_path=run_dir / "induce_calls.jsonl", role="induce"
+            cfg.optimizer, log_path=run_dir / "induce_calls.jsonl", role="induce",
+            reasoning_effort=cfg.optimizer.induce_reasoning_effort,
         )
+        self.embed = embedder or openai_embedder(cfg.bank.embed_model, cfg.optimizer.api_base)
         self.state_path = run_dir / "budget.json"
-        self.state = self._load_state()
+        self.state = (json.loads(self.state_path.read_text(encoding="utf-8")) if self.state_path.is_file()
+                      else {"rollouts": 0, "eval_rollouts": 0, "max_rollouts": cfg.max_rollouts, "stopped": None})
 
-    # -- state -----------------------------------------------------------------
-    def _load_state(self) -> dict:
-        if self.state_path.is_file():
-            return json.loads(self.state_path.read_text(encoding="utf-8"))
-        return {"rollouts": 0, "batches": 0, "bank_file": "bank.jsonl", "harness_dir": None,
-                "max_rollouts": self.cfg.max_rollouts, "max_iterations": self.cfg.max_iterations}
-
+    # -- bookkeeping ---------------------------------------------------------------
     def _save_state(self) -> None:
         self.state_path.write_text(json.dumps(self.state, indent=2) + "\n", encoding="utf-8")
 
-    def _exhausted(self) -> bool:
-        return self.state["batches"] >= self.cfg.max_iterations or self.state["rollouts"] >= self.cfg.max_rollouts
+    def _count(self, before: int, key: str = "rollouts") -> None:
+        self.state[key] += self.gaia2.rollouts - before
+        self._save_state()
 
-    def _log_lineage(self, record: dict) -> None:
-        with open(self.run_dir / "lineage.jsonl", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record) + "\n")
+    def _render(self, items, out_dir: Path) -> str:
+        digest = render(items, seed_dir=self.cfg.seed_harness_dir, out_dir=out_dir, policy=self.cfg.harness_policy,
+                        harness_tool=harness_tool_path(self.cfg), forbidden_ids=self.cfg.forbidden_ids)
+        (out_dir.parent / f"{out_dir.name}.digest").write_text(digest + "\n", encoding="utf-8")
+        return digest
 
-    # -- main loop -------------------------------------------------------------
+    # -- main --------------------------------------------------------------------------
     def run(self) -> dict:
-        cfg = self.cfg
-        seed_snapshot = self.run_dir / "seed_harness"
-        if self.state["harness_dir"] is None:
-            digest = render([], seed_dir=cfg.seed_harness_dir, out_dir=seed_snapshot, policy=cfg.harness_policy,
-                            harness_tool=harness_tool_path(cfg))
-            self.state.update(harness_dir=str(seed_snapshot), harness_digest=digest, seed_digest=digest)
+        seed_dir = self.run_dir / "seed_harness"
+        if not (self.run_dir / "seed_harness.digest").is_file():
+            self.state["seed_digest"] = self._render([], seed_dir)
             self._save_state()
-        stopped = None
-        for round_no in range(1, cfg.rounds + 1):
-            batches = epoch_batches(len(cfg.train_cases), cfg.batch_size, cfg.selection_seed + round_no)
-            for batch_no, task_ids in enumerate(batches, start=1):
-                batch_dir = self.run_dir / "rounds" / f"r{round_no}" / f"b{batch_no}"
-                if (batch_dir / "DONE").is_file():
-                    continue
-                if self._exhausted():
-                    stopped = "budget"
-                    break
-                self._run_batch(round_no, batch_no, task_ids, batch_dir)
-            if stopped:
+        harness, bank = seed_dir, []
+        for round_no in range(1, self.cfg.rounds + 1):
+            round_dir = self.run_dir / "rounds" / f"r{round_no}"
+            if not (round_dir / "DONE").is_file():
+                self._round(round_no, round_dir, harness, bank)
+            harness = round_dir / "harness"
+            bank = load_bank(self.run_dir / "banks" / f"ours_r{round_no}.jsonl")
+            if self.state["stopped"]:
                 break
-        final = self.final_eval()
-        return {"stopped": stopped or "completed", **self.state, "final_eval": final}
+        summary = self.evaluate()  # updates eval_rollouts: evaluate before snapshotting the state
+        return {**self.state, "eval": summary}
 
-    def _run_batch(self, round_no: int, batch_no: int, task_ids: list[int], batch_dir: Path) -> None:
-        cfg = self.cfg
+    def _round(self, round_no: int, round_dir: Path, harness: Path, prior_bank: list) -> None:
         started = time.time()
-        rollouts_before = self.gaia2.rollouts
-        batch_dir.mkdir(parents=True, exist_ok=True)
-        harness_dir = Path(self.state["harness_dir"])
-        store_path = batch_dir / "traces.jsonl"
-        if store_path.exists():  # an interrupted attempt of this batch: start it over
-            store_path.unlink()
-        store = TraceStore(store_path)
-        agent = (
-            Gaia2HarnessAgent(self.designer_client, k=cfg.k, band=cfg.target_band, forbidden_ids=cfg.forbidden_ids)
-            if cfg.arm == "ours"
-            else NoopHarnessAgent()
+        before = self.state["rollouts"]
+        input_digest = harness_digest(self.cfg, harness)
+        traces_by_task = self.corpus(round_no, round_dir / "corpus", harness)
+
+        new, ours_stats = build(
+            plan_ours(traces_by_task, max_pairs_per_task=self.cfg.bank.max_pairs_per_task,
+                      max_baseline_rollouts=self.cfg.bank.max_baseline_rollouts,
+                      tier2_last_only=self.cfg.bank.tier2_last_only),
+            self.induce_client, self.embed, condition="cascade",
+            existing_titles=[item.title for item in prior_bank], concurrency=self.cfg.bank.concurrency,
+            dedup_titles=self.cfg.bank.dedup_titles,
         )
+        bank = dedup_by_title([*prior_bank, *new]) if self.cfg.bank.dedup_titles else [*prior_bank, *new]
+        save_bank(self.run_dir / "banks" / f"ours_r{round_no}_new.jsonl", new)
+        save_bank(self.run_dir / "banks" / f"ours_r{round_no}.jsonl", bank)
+        stats = {"ours": ours_stats}
+        if round_no == 1:
+            orig, orig_stats = build(plan_orig(traces_by_task, seed=self.cfg.bank.orig_seed), self.induce_client,
+                                     self.embed, condition="intra_baseline", concurrency=self.cfg.bank.concurrency,
+                                     dedup_titles=self.cfg.bank.dedup_titles)
+            save_bank(self.run_dir / "banks" / "orig.jsonl", orig)
+            stats["orig"] = orig_stats
+        (round_dir / "bank_build.json").write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
+
+        digest = self._render(bank, round_dir / "harness")
+        with open(self.run_dir / "lineage.jsonl", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "round": round_no, "input_harness_digest": input_digest, "output_harness_digest": digest,
+                "n_tasks_run": len(traces_by_task), "new_items": [item.title for item in new],
+                "n_skills": len(bank), "rollouts": self.state["rollouts"] - before,
+                "stopped": self.state["stopped"], "elapsed_s": round(time.time() - started, 1),
+            }) + "\n")
+        (round_dir / "DONE").write_text(json.dumps({"digest": digest}) + "\n", encoding="utf-8")
+
+    # -- Stage 1 -----------------------------------------------------------------------
+    def corpus(self, round_no: int, corpus_dir: Path, harness: Path) -> dict[str, list[dict]]:
+        cfg = self.cfg
+        out: dict[str, list[dict]] = {}
+        for task_id in range(len(cfg.train_cases)):
+            task_dir = corpus_dir / f"task_{task_id:03d}"
+            if not (task_dir / "DONE").is_file():
+                if self.state["rollouts"] >= cfg.max_rollouts:
+                    self.state["stopped"] = f"budget (round {round_no}, before task {task_id})"
+                    self._save_state()
+                    break
+                self._corpus_task(task_id, task_dir, harness)
+            out[f"r{round_no}/task_{task_id:03d}"] = [
+                t.model_dump(mode="json") for t in TraceStore(task_dir / "traces.jsonl").all()
+            ]
+        return out
+
+    def _corpus_task(self, task_id: int, task_dir: Path, harness: Path) -> None:
+        cfg = self.cfg
+        if task_dir.exists():  # an interrupted attempt of this task: start it over
+            shutil.rmtree(task_dir)
+        task_dir.mkdir(parents=True)
+        before = self.gaia2.rollouts
         orchestrator = Gaia2Orchestrator(
             env_spec=EnvSpec(import_path=ENV_IMPORT_PATH),
             policy_spec=PolicySpec(
                 client_factory="envharness.infra.llm:LiteLLMClient",
                 client_kwargs={"model": cfg.run.model},
-                temperature=1.0,  # nominal; satisfies the band preflight (rollouts are sampled by gaia2-runner)
+                temperature=1.0,  # nominal; satisfies the band preflight (OpenClaw samples the rollouts)
             ),
-            harness_agent=agent,
+            harness_agent=Gaia2HarnessAgent(self.designer_client, k=cfg.k, band=cfg.target_band),
             objective=DifficultyZone(target_band=cfg.target_band),
             budget=CappedAdaptive(max_k=cfg.max_k),
-            trace_store=store,
+            trace_store=TraceStore(task_dir / "traces.jsonl"),
             tool_schemas=[EXEC_TOOL_SCHEMA],
-            env_state_schema=ENV_STATE_SCHEMA + "\n\n" + (PROMPTS_DIR / "app_cli_summary.md").read_text(encoding="utf-8"),
+            env_state_schema=ENV_STATE_SCHEMA + "\n" + (PROMPTS_DIR / "app_cli_summary.md").read_text(encoding="utf-8"),
             config=OrchestratorConfig(
                 task_id=f"gaia2-openclaw:{self.run_dir.name}",
                 task_description=TASK_DESCRIPTION,
-                n_tasks=len(task_ids),
+                n_tasks=1,
                 k_per_candidate=cfg.k,
-                explicit_task_ids=list(task_ids),
+                explicit_task_ids=[task_id],
                 compute_baseline=True,
                 baseline_cache_dir=None,
                 mutator_baseline_mode="full",
                 skip_passthrough_candidates=cfg.skip_passthrough_candidates,
-                max_episode_steps=200,
             ),
-            log_dir=batch_dir,
+            log_dir=task_dir,
             gaia2=self.gaia2,
             cases=cfg.train_cases,
-            harness_dir=harness_dir,
-            work_dir=batch_dir,
+            harness_dir=harness,
+            work_dir=task_dir,
+            forbidden_ids=cfg.forbidden_ids,
         )
         orchestrator.run()
-        traces = store.all()
+        self._count(before)
+        (task_dir / "DONE").write_text(json.dumps({"harness_digest": harness_digest(cfg, harness)}) + "\n",
+                                       encoding="utf-8")
 
-        # -- induce candidate skills per task (cascade) --------------------------
-        candidates = []
-        induce_log = []
-        for task_id in task_ids:
-            case = cfg.train_cases[task_id]
-            units, tier = select_units(
-                [t for t in traces if t.rollout_seed == task_id],
-                task_idx=task_id, scenario_id=case.scenario_id, pairs_per_task=cfg.pairs_per_task, arm=cfg.arm,
-            )
-            for unit in units:
-                items = induce(self.induce_client, unit)
-                for item in items:
-                    item.source.update(round=round_no, batch=batch_no)
-                candidates.extend(items)
-                induce_log.append({"task_idx": task_id, "tier": unit.tier, "n_items": len(items),
-                                   "items": [i.to_dict() for i in items]})
-            if not units:
-                induce_log.append({"task_idx": task_id, "tier": tier, "n_items": 0, "items": []})
-        (batch_dir / "induce.jsonl").write_text("".join(json.dumps(r) + "\n" for r in induce_log), encoding="utf-8")
-
-        # -- update the bank ----------------------------------------------------------
-        bank = load_bank(self.run_dir / self.state["bank_file"])
-        source = {"round": round_no, "batch": batch_no}
-        new = select_new_skills(self.induce_client, candidates, bank,
-                                max_new=cfg.max_new_skills_per_batch, source=source)
-        (batch_dir / "selected.json").write_text(json.dumps([i.to_dict() for i in new], indent=2) + "\n", encoding="utf-8")
-        bank = bank + new
-        consolidated = False
-        if len(bank) > cfg.max_skills:
-            bank, consolidated = consolidate(self.induce_client, bank, max_skills=cfg.max_skills, source=source), True
-        out_harness = batch_dir / "harness"
-        try:
-            digest = render(bank, seed_dir=cfg.seed_harness_dir, out_dir=out_harness, policy=cfg.harness_policy,
-                            harness_tool=harness_tool_path(cfg), forbidden_ids=cfg.forbidden_ids)
-        except SkillRenderError:
-            bank, consolidated = consolidate(self.induce_client, bank, max_skills=max(1, len(bank) - 1), source=source), True
-            digest = render(bank, seed_dir=cfg.seed_harness_dir, out_dir=out_harness, policy=cfg.harness_policy,
-                            harness_tool=harness_tool_path(cfg), forbidden_ids=cfg.forbidden_ids)
-        if consolidated:
-            self.state["bank_file"] = f"bank_consolidated_r{round_no}b{batch_no}.jsonl"
-            save_bank(self.run_dir / self.state["bank_file"], bank)
-        else:
-            with open(self.run_dir / self.state["bank_file"], "a", encoding="utf-8") as handle:
-                for item in new:
-                    handle.write(json.dumps(item.to_dict()) + "\n")
-        (batch_dir / "harness.digest").write_text(digest + "\n", encoding="utf-8")
-
-        with open(self.run_dir / "traces.jsonl", "a", encoding="utf-8") as handle:
-            for trace in traces:
-                handle.write(trace.model_dump_json() + "\n")
-        used = self.gaia2.rollouts - rollouts_before
-        self.state.update(
-            rollouts=self.state["rollouts"] + used,
-            batches=self.state["batches"] + 1,
-            harness_dir=str(out_harness),
-            harness_digest=digest,
-        )
-        self._log_lineage(
-            {
-                "round": round_no, "batch": batch_no, "task_ids": task_ids,
-                "scenario_ids": [cfg.train_cases[t].scenario_id for t in task_ids],
-                "input_harness_digest": harness_digest(cfg, harness_dir),
-                "skills_digest": digest, "added": [i.title for i in new], "n_skills": len(bank),
-                "consolidated": consolidated, "rollouts": used, "elapsed_s": round(time.time() - started, 1),
-            }
-        )
-        self._save_state()
-        (batch_dir / "DONE").write_text(json.dumps({"digest": digest}) + "\n", encoding="utf-8")
-
-    def final_eval(self) -> dict:
-        out = self.run_dir / "final_eval"
-        if (out / "summary.json").is_file():
-            return json.loads((out / "summary.json").read_text(encoding="utf-8"))
-        harnesses = {"seed": self.run_dir / "seed_harness", "final": Path(self.state["harness_dir"])}
+    # -- Stage 3 -----------------------------------------------------------------------
+    def evaluate(self) -> dict:
+        out = self.run_dir / "eval"
+        arms = {"nobank": self.run_dir / "seed_harness"}
+        orig_bank = self.run_dir / "banks" / "orig.jsonl"
+        if orig_bank.is_file():
+            harness = out / "harness_orig"
+            if not (out / "harness_orig.digest").is_file():
+                self._render(load_bank(orig_bank), harness)
+            arms["orig"] = harness
+        for round_dir in sorted((self.run_dir / "rounds").glob("r*"), key=lambda p: int(p.name[1:])):
+            if (round_dir / "DONE").is_file():
+                arms[f"ours_{round_dir.name}"] = round_dir / "harness"
         before = self.gaia2.rollouts
-        summary = evaluate(self.gaia2, self.cfg.dev_cases, harnesses=harnesses, k=self.cfg.eval_repetitions, out_dir=out)
-        self.state["eval_rollouts"] = self.gaia2.rollouts - before
-        self._save_state()
+        summary = evaluate(self.gaia2, self.cfg.dev_cases, harnesses=arms, k=self.cfg.eval_repetitions, out_dir=out,
+                           digest_fn=lambda d: harness_digest(self.cfg, d))
+        self._count(before, "eval_rollouts")
         return summary
 
 
@@ -285,9 +260,13 @@ def main(argv: list[str] | None = None) -> int:
                 "train": [c.scenario_id for c in cfg.train_cases],
                 "development": [c.scenario_id for c in cfg.dev_cases],
             }, indent=2, default=str) + "\n", encoding="utf-8")
-    result = CoEvolution(cfg, run_dir).run()
+    with open(run_dir / "resumes.jsonl", "a", encoding="utf-8") as handle:
+        head = subprocess.run(["git", "-C", str(cfg.meta_are_repo), "rev-parse", "HEAD"],
+                              text=True, capture_output=True).stdout.strip()
+        handle.write(json.dumps({"t": time.time(), "resume": args.resume, "meta_are_head": head}) + "\n")
+    result = Pipeline(cfg, run_dir).run()
     (run_dir / "result.json").write_text(json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8")
-    print(json.dumps({k: result[k] for k in ("stopped", "rollouts", "batches", "harness_digest")}, indent=2))
+    print(json.dumps({k: result[k] for k in ("rollouts", "eval_rollouts", "stopped")}, indent=2))
     return 0
 
 
