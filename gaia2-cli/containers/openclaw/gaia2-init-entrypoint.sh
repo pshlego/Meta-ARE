@@ -146,28 +146,52 @@ resolve_harness() {
 
 
 install_env_rules() {
-    # EnvHarness-style environment rules for agent app-CLI calls (see
-    # gaia2_cli/env_rules.py). The rules live under /var/gaia2 (gaia2-only),
-    # so the agent can neither read nor alter them.
+    # EnvHarness-style environment bundle (gaia2_cli/env_rules.py Contract
+    # rules.py and/or gaia2_cli/env_setup.py Stage setup.json). It lives
+    # under /var/gaia2 (gaia2-only), so the agent can neither read nor alter it.
     [ -n "${GAIA2_ENV_RULES_DIR:-}" ] || return 0
-    local src="$GAIA2_ENV_RULES_DIR/rules.py" dst=/var/gaia2/env_rules actual
-    if [ ! -f "$src" ]; then
-        echo "[gaia2-init] ERROR: env rules dir has no rules.py: $GAIA2_ENV_RULES_DIR" >&2
+    local src="$GAIA2_ENV_RULES_DIR" dst=/var/gaia2/env_rules actual name
+    if [ ! -f "$src/rules.py" ] && [ ! -f "$src/setup.json" ]; then
+        echo "[gaia2-init] ERROR: env rules dir has neither rules.py nor setup.json: $src" >&2
         exit 1
     fi
-    actual="sha256:$(sha256sum "$src" | cut -d' ' -f1)"
+    actual=$(python3 -c 'import sys; from gaia2_cli.env_setup import bundle_digest; print(bundle_digest(sys.argv[1]))' "$src")
     if [ -n "${GAIA2_ENV_RULES_DIGEST:-}" ] && [ "$actual" != "$GAIA2_ENV_RULES_DIGEST" ]; then
         echo "[gaia2-init] ERROR: env rules digest $actual != expected $GAIA2_ENV_RULES_DIGEST" >&2
         exit 1
     fi
     mkdir -p "$dst"
-    cp "$src" "$dst/rules.py"
+    for name in rules.py setup.json; do
+        [ -f "$src/$name" ] && cp "$src/$name" "$dst/$name"
+    done
     : > "$dst/applied.jsonl"
     : > "$dst/errors.log"
+    : > "$dst/setup_log.jsonl"
     chown -R gaia2:gaia2 "$dst"
     chmod 700 "$dst"
-    chmod 600 "$dst/rules.py" "$dst/applied.jsonl" "$dst/errors.log"
-    echo "[gaia2-init] Installed env rules ($actual)" >&2
+    chmod 600 "$dst"/*
+    echo "[gaia2-init] Installed env rules bundle ($actual)" >&2
+}
+
+
+run_env_setup() {
+    # Stage: replay the designer's setup actions as ENV events before the
+    # agent starts (judged writes are AGENT-only), at the simulated time.
+    local setup=/var/gaia2/env_rules/setup.json
+    [ -f "$setup" ] || return 0
+    prepare_faketime_file
+    echo "[gaia2-init] Running env setup actions..." >&2
+    su -s /usr/bin/bash gaia2 -c "
+        export PATH=/usr/local/bin:/usr/bin:/bin
+        export GAIA2_STATE_DIR='$STATE_DIR'
+        if [ -n '${FAKETIME:-}' ]; then
+            export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
+            export FAKETIME_TIMESTAMP_FILE='$FAKETIME_FILE'
+            export FAKETIME_NO_CACHE=1
+        fi
+        gaia2-env-setup '$setup' /var/gaia2/env_rules/setup_log.jsonl
+    " || { echo "[gaia2-init] ERROR: env setup failed" >&2; exit 1; }
+    echo "[gaia2-init] Env setup done" >&2
 }
 
 
@@ -243,6 +267,9 @@ init_state() {
 
 
 prepare_faketime_file() {
+    # Idempotent (env setup runs it before eventd does): /tmp is sticky and
+    # fs.protected_regular stops root from reopening a gaia2-owned file there.
+    rm -f "$FAKETIME_FILE"
     if [ -n "${FAKETIME:-}" ]; then
         echo "$FAKETIME" > "$FAKETIME_FILE"
     else
@@ -424,6 +451,7 @@ main() {
     install_harness_skills
     init_state
     install_env_rules
+    run_env_setup
     start_eventd
     start_adapter
     start_tls_proxy_if_needed

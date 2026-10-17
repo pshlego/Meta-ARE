@@ -1096,6 +1096,7 @@ class ContainerRunner:
             ("/tmp/gaia2-adapter.log", "adapter.log"),
             ("/var/gaia2/env_rules/applied.jsonl", "env_rules_applied.jsonl"),
             ("/var/gaia2/env_rules/errors.log", "env_rules_errors.log"),
+            ("/var/gaia2/env_rules/setup_log.jsonl", "env_rules_setup.jsonl"),
         ]:
             try:
                 self.launcher.copy_from(container_id, src, str(artifact_dir / dst))

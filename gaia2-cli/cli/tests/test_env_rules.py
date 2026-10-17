@@ -114,22 +114,75 @@ def test_read_output_can_be_filtered(env, monkeypatch, capsys):
     )
     code, out, _ = _run(monkeypatch, capsys, SEARCH)
     assert code == 0 and out == "[]\n"
-    assert [entry["kind"] for entry in _applied(home)] == ["modified"]
+    assert [entry["kind"] for entry in _applied(home)] == ["observation_modified"]
 
 
-def test_write_output_rewrite_is_ignored(env, monkeypatch, capsys):
+def test_write_output_can_be_rewritten_and_is_recorded(env, monkeypatch, capsys):
     state, home = env
     _rules(
         home,
         "class _Rules(Rules):\n"
         "    def filter_observation(self, obs, env_state):\n"
-        "        return Observation(text='Error: failed\\n')\n",
+        "        return Observation(text='Request accepted.\\n')\n",
     )
     code, out, _ = _run(monkeypatch, capsys, ADD_EVENT)
-    assert code == 0
-    assert json.loads(out)["status"] == "success"
-    assert len(read_events(state)) == 1
-    assert [entry["kind"] for entry in _applied(home)] == ["write_observation_ignored"]
+    assert code == 0 and out == "Request accepted.\n"
+    assert len(read_events(state)) == 1  # the write itself is unchanged
+    [entry] = _applied(home)
+    assert entry["kind"] == "observation_modified" and entry["wrote"] is True and entry["argv"] == ADD_EVENT
+
+
+def test_action_rewrite_executes_new_argv(env, monkeypatch, capsys):
+    state, home = env
+    _run(monkeypatch, capsys, ADD_EVENT)
+    _rules(
+        home,
+        "class _Rules(Rules):\n"
+        "    def filter_action(self, action, env_state):\n"
+        "        if env_state['subcommand'] == 'search-events':\n"
+        "            return Action(name=action.name, kwargs={**action.kwargs, 'argv': ['search-events', '--query', 'nomatch']})\n"
+        "        return action\n",
+    )
+    code, out, _ = _run(monkeypatch, capsys, SEARCH)
+    assert code == 0 and json.loads(out) == []
+    events = read_events(state)
+    assert events[-1]["args"]["query"] == "nomatch"
+    [entry] = _applied(home)
+    assert entry["kind"] == "action_rewritten" and entry["new_argv"][-1] == "nomatch"
+
+
+def test_modify_transition_changes_result_after_execution(env, monkeypatch, capsys):
+    state, home = env
+    _rules(
+        home,
+        "class _Rules(Rules):\n"
+        "    def modify_transition(self, action, response, env_state):\n"
+        "        if not response.info['wrote']:\n"
+        "            return response\n"
+        "        info = {**response.info, 'exit_code': 1, 'stderr': 'Error: request timed out\\n'}\n"
+        "        return EnvResponse(observation=Observation(text=''), info=info)\n",
+    )
+    code, out, err = _run(monkeypatch, capsys, ADD_EVENT)
+    assert code == 1 and out == "" and "timed out" in err
+    assert len(read_events(state)) == 1  # executed: T changes only the reported result
+    [entry] = _applied(home)
+    assert entry["kind"] == "transition_modified" and entry["wrote"] is True and entry["exit_code"] == [0, 1]
+
+
+def test_extras_persist_across_calls(env, monkeypatch, capsys):
+    state, home = env
+    _rules(
+        home,
+        "class _Rules(Rules):\n"
+        "    def filter_action(self, action, env_state):\n"
+        "        seen = env_state['extras'].get('seen', 0)\n"
+        "        env_state['extras']['seen'] = seen + 1\n"
+        "        return Blocked(reason='busy') if seen == 1 else action\n",
+    )
+    assert _run(monkeypatch, capsys, SEARCH)[0] == 0
+    assert _run(monkeypatch, capsys, SEARCH)[0] == 1
+    assert _run(monkeypatch, capsys, SEARCH)[0] == 0
+    assert json.loads((home / "state.json").read_text())["extras"] == {"seen": 3}
 
 
 def test_rules_errors_fail_open(env, monkeypatch, capsys):
@@ -156,10 +209,10 @@ def test_app_errors_keep_exit_codes(env, monkeypatch, capsys):
 def test_loader_contract():
     with pytest.raises(env_rules.RulesCodeError):
         env_rules.load_rules_class("x = 1\n")
-    with pytest.raises(env_rules.RulesCodeError):
-        env_rules.load_rules_class(
-            "class _Rules(Rules):\n    def modify_transition(self, a, r, s):\n        return r\n"
-        )
+    cls = env_rules.load_rules_class(
+        "class _Rules(Rules):\n    def modify_transition(self, a, r, s):\n        return EnvResponse(info=r.info)\n"
+    )
+    assert issubclass(cls, env_rules.Rules)
     assert issubclass(env_rules.load_rules_class("class _Rules(Rules):\n    pass\n"), env_rules.Rules)
 
 
@@ -197,3 +250,26 @@ def test_subcommand_counter_ignores_help_probes(env, monkeypatch, capsys):
     saved = json.loads((home / "state.json").read_text())
     assert saved["per_subcommand"] == {"calendar.search-events": 1, "calendar.add-event": 2}
     assert saved["per_app"]["calendar"] == 5
+
+
+def test_setup_actions_run_as_env_events(tmp_path, monkeypatch):
+    from gaia2_cli import env_setup
+
+    with pytest.raises(env_setup.SetupError):
+        env_setup.parse_actions({"commands": ["rm -rf /"]})
+    with pytest.raises(env_setup.SetupError):
+        env_setup.parse_actions({"commands": ["contacts get-contacts ; ls"]})
+    calls = []
+
+    def fake_run(argv, env, **kwargs):
+        calls.append((argv, env["GAIA2_EVENT_ID"]))
+        return type("Done", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    monkeypatch.setattr(env_setup.subprocess, "run", fake_run)
+    setup = tmp_path / "setup.json"
+    setup.write_text(json.dumps({"commands": ["contacts add-new-contact --first-name 'Ann Lee'", "calendar get-all-tags"]}))
+    log = tmp_path / "log.jsonl"
+    assert env_setup.main([str(setup), str(log)]) == 0
+    assert calls == [(["contacts", "add-new-contact", "--first-name", "Ann Lee"], "Event-ENV-setup-0"),
+                     (["calendar", "get-all-tags"], "Event-ENV-setup-1")]
+    assert [json.loads(l)["exit_code"] for l in log.read_text().splitlines()] == [0, 0]

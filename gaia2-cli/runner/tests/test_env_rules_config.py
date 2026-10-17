@@ -42,7 +42,8 @@ def test_env_rules_dir_is_mounted_and_pinned(tmp_path: Path) -> None:
     rules = tmp_path / "rules"
     rules.mkdir()
     (rules / "rules.py").write_text("class _Rules(Rules):\n    pass\n")
-    digest = "sha256:" + hashlib.sha256((rules / "rules.py").read_bytes()).hexdigest()
+    inner = hashlib.sha256((rules / "rules.py").read_bytes()).hexdigest()
+    digest = "sha256:" + hashlib.sha256(f"rules.py:{inner}\n".encode()).hexdigest()
     config = _build(env_rules_dir=str(rules))
     assert f"{rules.resolve()}:/opt/gaia2_env_rules_src:ro" in config.extra_volumes
     assert config.container_env["GAIA2_ENV_RULES_DIR"] == "/opt/gaia2_env_rules_src"
@@ -51,11 +52,24 @@ def test_env_rules_dir_is_mounted_and_pinned(tmp_path: Path) -> None:
 
 
 def test_env_rules_dir_requires_rules_file_and_openclaw(tmp_path: Path) -> None:
-    with pytest.raises(click.UsageError, match="no rules.py"):
+    with pytest.raises(click.UsageError, match="neither rules.py nor setup.json"):
         _build(env_rules_dir=str(tmp_path))
     (tmp_path / "rules.py").write_text("")
     with pytest.raises(click.UsageError, match="OpenClaw"):
         _build(image="localhost/gaia2-hermes:latest", env_rules_dir=str(tmp_path))
+
+
+def test_setup_only_bundle_is_accepted_and_digest_matches_cli(tmp_path: Path) -> None:
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
+    from gaia2_cli.env_setup import bundle_digest
+
+    (tmp_path / "setup.json").write_text(json.dumps({"commands": ["contacts get-contacts"]}))
+    config = _build(env_rules_dir=str(tmp_path))
+    assert config.result_metadata["env_rules_digest"] == bundle_digest(str(tmp_path))
+    (tmp_path / "rules.py").write_text("class _Rules(Rules):\n    pass\n")
+    assert runner_cli.env_bundle_digest(tmp_path) == bundle_digest(str(tmp_path))
 
 
 def test_without_env_rules_nothing_is_added() -> None:

@@ -1,31 +1,33 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 # This source code is licensed under the terms described in the LICENSE file in
 # the root directory of this source tree.
-"""Environment-side rules for the Gaia2 app CLIs (EnvHarness "Rules", A/O axes).
+"""Environment-side rules for the Gaia2 app CLIs (EnvHarness Contract: A/T/O).
 
 Every app CLI entry point goes through :func:`run_app`. Without a rules file
 (or for ENV actions, which carry ``GAIA2_EVENT_ID``) it calls the original
 click group unchanged, so seed behaviour is byte-identical.
 
 With ``<rules home>/rules.py`` present, a ``_Rules(Rules)`` class defined in
-it may intervene on agent calls:
+it intervenes on agent calls exactly like envharness ``harnesses/rules.py``:
 
 * ``filter_action(action, env_state) -> Action | Blocked`` runs before the
-  command. ``Blocked`` stops it: the app is never executed (nothing reaches
-  ``events.jsonl``), the reason is printed to stderr like a normal app error
-  and the process exits 1.
-* ``filter_observation(obs, env_state) -> Observation`` rewrites the stdout
-  the agent sees. A command that wrote app state always shows its original
-  output; a rewrite there is ignored and recorded as a violation.
+  command (A). ``Blocked`` stops it: the app is never executed (nothing
+  reaches ``events.jsonl``), the reason is printed to stderr like a normal
+  app error and the process exits 1. A returned ``Action`` whose
+  ``kwargs["argv"]`` differs is what actually executes.
+* ``modify_transition(action, response, env_state) -> EnvResponse`` (T)
+  transforms the executed command's result: ``response.observation.text`` is
+  its stdout, ``response.info`` holds ``exit_code``, ``stderr`` and ``wrote``.
+* ``filter_observation(obs, env_state) -> Observation`` (O) transforms the
+  stdout the agent sees.
 
-``modify_transition`` (changing an executed result) is deliberately not
-supported: making a successful write look failed invites a retry that the
-judge would count twice. Express "transient failures" as ``Blocked``.
-
-The rules file lives under ``/var/gaia2`` (gaia2-only, 0700), so the agent
-can neither read nor change it. Every intervention is appended to
-``applied.jsonl``; errors in rules code fail open and go to ``errors.log``.
-This module is stdlib-only; it must stay importable in the slim image.
+Which interventions are acceptable is the designer's (prompt-level) concern,
+as in the original benchmarks; every intervention is recorded in
+``applied.jsonl`` (with ``wrote`` for state-changing calls) so judge integrity
+can be audited. ``env_state["extras"]`` is a JSON scratch dict persisted
+across calls. The rules file lives under ``/var/gaia2`` (gaia2-only, 0700), so
+the agent can neither read nor change it; errors in rules code fail open and
+go to ``errors.log``. This module is stdlib-only.
 """
 
 from __future__ import annotations
@@ -72,11 +74,29 @@ class Observation:
     data: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class EnvResponse:
+    """Mirrors ``envharness.core.types.EnvResponse`` for one app call.
+
+    ``observation.text`` is the command's stdout; ``info`` carries
+    ``exit_code``, ``stderr`` and ``wrote``.
+    """
+
+    observation: Observation = field(default_factory=Observation)
+    reward: float = 0.0
+    terminated: bool = False
+    truncated: bool = False
+    info: dict[str, Any] = field(default_factory=dict)
+
+
 class Rules:
     """Base class for rules code; override either hook."""
 
     def filter_action(self, action: Action, env_state: dict[str, Any]) -> Action | Blocked:
         return action
+
+    def modify_transition(self, action: Action, response: EnvResponse, env_state: dict[str, Any]) -> EnvResponse:
+        return response
 
     def filter_observation(self, obs: Observation, env_state: dict[str, Any]) -> Observation:
         return obs
@@ -93,6 +113,7 @@ def load_rules_class(source: str) -> type[Rules]:
         "Action": Action,
         "Blocked": Blocked,
         "Observation": Observation,
+        "EnvResponse": EnvResponse,
     }
     try:
         exec(compile(source, "<env_rules>", "exec"), namespace)  # noqa: S102 - trusted, verified host-side
@@ -101,8 +122,6 @@ def load_rules_class(source: str) -> type[Rules]:
     cls = namespace.get("_Rules")
     if not isinstance(cls, type) or not issubclass(cls, Rules):
         raise RulesCodeError("rules code must define `class _Rules(Rules)`")
-    if "modify_transition" in vars(cls):
-        raise RulesCodeError("modify_transition is not supported by Gaia2 env rules")
     return cls
 
 
@@ -118,14 +137,10 @@ def _append(path: Path, line: str) -> None:
         pass
 
 
-def _record(home: Path, app: str, subcommand: str, kind: str, reason: str = "") -> None:
-    entry = {
-        "t": time.time(),
-        "app": app,
-        "subcommand": subcommand,
-        "kind": kind,
-        "reason": reason[:_REASON_LOG_CHARS],
-    }
+def _record(home: Path, app: str, subcommand: str, kind: str, argv: list[str], **extra: Any) -> None:
+    entry = {"t": time.time(), "app": app, "subcommand": subcommand, "kind": kind, "argv": argv, **extra}
+    if "reason" in entry:
+        entry["reason"] = str(entry["reason"])[:_REASON_LOG_CHARS]
     _append(home / "applied.jsonl", json.dumps(entry) + "\n")
 
 
@@ -136,13 +151,41 @@ def _error(home: Path, app: str, context: str) -> None:
     )
 
 
-def _next_call_index(home: Path, app: str, subcommand: str, is_help: bool) -> tuple[int, int, int]:
-    """Increment and return (per-app, total, per-subcommand) call counters, 1-based.
+def _next_call_index(home: Path, app: str, subcommand: str, is_help: bool) -> tuple[int, int, int, dict]:
+    """Increment and return (per-app, total, per-subcommand) call counters (1-based) and ``extras``.
 
     Help/schema probes count toward the app and total counters but not toward
     the per-subcommand counter (0 for them), so rules can target "the first
     real call of X" even when the agent explores with ``--help`` first.
     """
+    with _locked_state(home) as state:
+        per_app = state.setdefault("per_app", {})
+        per_app[app] = int(per_app.get(app, 0)) + 1
+        state["total"] = int(state.get("total", 0)) + 1
+        per_sub = state.setdefault("per_subcommand", {})
+        key = f"{app}.{subcommand}"
+        if not is_help:
+            per_sub[key] = int(per_sub.get(key, 0)) + 1
+        extras = state.get("extras")
+        return per_app[app], state["total"], (0 if is_help else per_sub[key]), (
+            dict(extras) if isinstance(extras, dict) else {}
+        )
+
+
+def _save_extras(home: Path, extras: Any) -> None:
+    if not isinstance(extras, dict):
+        return
+    try:
+        json.dumps(extras)
+    except (TypeError, ValueError):
+        _append(home / "errors.log", "env_state['extras'] is not JSON-serializable; not saved\n")
+        return
+    with _locked_state(home) as state:
+        state["extras"] = extras
+
+
+@contextlib.contextmanager
+def _locked_state(home: Path):
     state_path = home / "state.json"
     with open(home / "state.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -151,15 +194,8 @@ def _next_call_index(home: Path, app: str, subcommand: str, is_help: bool) -> tu
                 state = json.loads(state_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 state = {}
-            per_app = state.setdefault("per_app", {})
-            per_app[app] = int(per_app.get(app, 0)) + 1
-            state["total"] = int(state.get("total", 0)) + 1
-            per_sub = state.setdefault("per_subcommand", {})
-            key = f"{app}.{subcommand}"
-            if not is_help:
-                per_sub[key] = int(per_sub.get(key, 0)) + 1
+            yield state
             state_path.write_text(json.dumps(state), encoding="utf-8")
-            return per_app[app], state["total"], (0 if is_help else per_sub[key])
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
@@ -207,6 +243,13 @@ def _invoke(group: Any, app: str, argv: list[str]) -> int:
         return 1
 
 
+def _argv_of(decision: Any, fallback: list[str]) -> list[str]:
+    argv = getattr(decision, "kwargs", {}).get("argv") if isinstance(getattr(decision, "kwargs", None), dict) else None
+    if isinstance(argv, (list, tuple)) and all(isinstance(arg, str) for arg in argv):
+        return list(argv)
+    return fallback
+
+
 def run_app(app: str, group: Any) -> None:
     """Entry point shared by every app CLI."""
     home = rules_home()
@@ -220,24 +263,28 @@ def run_app(app: str, group: Any) -> None:
     is_help = _is_help(argv, subcommand)
     try:
         rules = load_rules_class(rules_file.read_text(encoding="utf-8"))()
-        app_index, total_index, subcommand_index = _next_call_index(home, app, subcommand, is_help)
+        app_index, total_index, subcommand_index, extras = _next_call_index(home, app, subcommand, is_help)
     except Exception:
         _error(home, app, "rules load failed; running unchanged")
         group()
         return
 
-    env_state = {
+    env_state: dict[str, Any] = {
         "app": app,
         "subcommand": subcommand,
+        "argv": list(argv),
         "is_help": is_help,
         "call_index_app": app_index,
         "call_index_total": total_index,
         "call_index_subcommand": subcommand_index,
+        "extras": extras,
     }
     action = Action(
         name=f"{app}.{subcommand}" if subcommand else app,
         kwargs={"argv": list(argv), "subcommand": subcommand, "text": shlex.join([app, *argv])},
     )
+
+    # A: transform or reject before execution.
     try:
         decision = rules.filter_action(action, env_state)
     except Exception:
@@ -245,36 +292,62 @@ def run_app(app: str, group: Any) -> None:
         decision = action
     if isinstance(decision, Blocked) or getattr(decision, "kind", None) == "blocked":
         reason = str(getattr(decision, "reason", "") or "Error: request failed")
-        _record(home, app, subcommand, "blocked", reason)
+        _record(home, app, subcommand, "blocked", argv, reason=reason)
+        _save_extras(home, env_state.get("extras"))
         print(reason, file=sys.stderr)
         sys.exit(1)
-    if isinstance(decision, Action) and decision.kwargs.get("argv") != argv:
-        # Rewriting what actually executes could corrupt judged writes.
-        _record(home, app, subcommand, "action_rewrite_ignored")
+    exec_argv = _argv_of(decision, argv)
+    if exec_argv != argv:
+        _record(home, app, subcommand, "action_rewritten", argv, new_argv=exec_argv)
+    executed = decision if isinstance(decision, Action) else action
+    env_state["executed_argv"] = exec_argv
 
     writes_before = _write_count()
-    buffer = io.StringIO()
-    with contextlib.redirect_stdout(buffer):
-        code = _invoke(group, app, argv)
-    original = buffer.getvalue()
+    out_buffer, err_buffer = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out_buffer), contextlib.redirect_stderr(err_buffer):
+        code = _invoke(group, app, exec_argv)
+    stdout, stderr = out_buffer.getvalue(), err_buffer.getvalue()
     wrote = _write_count() > writes_before
 
-    shown = original
+    # T: transform the executed command's result.
+    response = EnvResponse(
+        observation=Observation(text=stdout, data={"exit_code": code, "wrote": wrote}),
+        info={"exit_code": code, "stderr": stderr, "wrote": wrote},
+    )
+    try:
+        transformed = rules.modify_transition(executed, response, env_state)
+        info = getattr(transformed, "info", None) or {}
+        new_stdout = getattr(getattr(transformed, "observation", None), "text", stdout)
+        new_code = info.get("exit_code", code)
+        new_stderr = info.get("stderr", stderr)
+        if not (isinstance(new_stdout, str) and isinstance(new_stderr, str) and isinstance(new_code, int)):
+            raise TypeError("modify_transition must keep text str, info.exit_code int and info.stderr str")
+        if (new_stdout, new_code, new_stderr) != (stdout, code, stderr):
+            _record(home, app, subcommand, "transition_modified", argv, wrote=wrote,
+                    exit_code=[code, new_code], stdout_changed=new_stdout != stdout,
+                    stderr_changed=new_stderr != stderr)
+            stdout, code, stderr = new_stdout, new_code, new_stderr
+    except Exception:
+        _error(home, app, "modify_transition raised; keeping the executed result")
+
+    # O: transform what the agent sees.
     try:
         filtered = rules.filter_observation(
-            Observation(text=original, data={"exit_code": code, "wrote": wrote}), env_state
+            Observation(text=stdout, data={"exit_code": code, "wrote": wrote}), env_state
         )
-        text = getattr(filtered, "text", original)
-        if isinstance(text, str) and text != original:
-            if wrote:
-                _record(home, app, subcommand, "write_observation_ignored")
-            else:
-                shown = text
-                _record(home, app, subcommand, "modified")
+        text = getattr(filtered, "text", stdout)
+        if not isinstance(text, str):
+            raise TypeError("filter_observation must return an Observation with str text")
+        if text != stdout:
+            _record(home, app, subcommand, "observation_modified", argv, wrote=wrote)
+            stdout = text
     except Exception:
-        _error(home, app, "filter_observation raised; showing original output")
+        _error(home, app, "filter_observation raised; showing the unfiltered output")
 
-    sys.stdout.write(shown)
+    _save_extras(home, env_state.get("extras"))
+    sys.stderr.write(stderr)
+    sys.stderr.flush()
+    sys.stdout.write(stdout)
     sys.stdout.flush()
     sys.exit(code)
 
