@@ -56,7 +56,7 @@ Your Rules hooks run on every student call of an app CLI (one process per call):
   filter_observation(obs, env_state) -> Observation                (O)
     obs.text = stdout shown to the student; obs.data = {exit_code, wrote}
 
-env_state (read-only except extras):
+env_state (env_state.app or env_state["app"]; read-only except extras):
   app: str; subcommand: str ("" or "schema" for probes); argv: list[str]
   is_help: bool                      # --help / schema probes
   call_index_app: int                # 1-based count of the student's calls to this app (incl. probes)

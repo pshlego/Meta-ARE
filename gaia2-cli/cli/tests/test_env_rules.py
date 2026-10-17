@@ -273,3 +273,19 @@ def test_setup_actions_run_as_env_events(tmp_path, monkeypatch):
     assert calls == [(["contacts", "add-new-contact", "--first-name", "Ann Lee"], "Event-ENV-setup-0"),
                      (["calendar", "get-all-tags"], "Event-ENV-setup-1")]
     assert [json.loads(l)["exit_code"] for l in log.read_text().splitlines()] == [0, 0]
+
+
+def test_env_state_supports_attribute_access(env, monkeypatch, capsys):
+    _, home = env
+    _rules(
+        home,
+        "class _Rules(Rules):\n"
+        "    def filter_action(self, action, env_state):\n"
+        "        env_state.extras['n'] = env_state['extras'].get('n', 0) + 1\n"
+        "        if env_state.app == 'calendar' and env_state.subcommand == 'search-events':\n"
+        "            return Blocked(reason='busy')\n"
+        "        return action\n",
+    )
+    assert _run(monkeypatch, capsys, SEARCH)[0] == 1
+    assert not (home / "errors.log").exists()
+    assert json.loads((home / "state.json").read_text())["extras"] == {"n": 1}

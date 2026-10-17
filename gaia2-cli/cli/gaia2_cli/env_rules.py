@@ -89,8 +89,25 @@ class EnvResponse:
     info: dict[str, Any] = field(default_factory=dict)
 
 
+class EnvState(dict):
+    """``env_state`` readable as ``env_state.app`` or ``env_state["app"]``.
+
+    envharness bridges hand hooks a typed state object (attribute access,
+    which ``_DEFAULT_SYSTEM`` teaches); this keeps that and the dict form.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+
+
 class Rules:
-    """Base class for rules code; override either hook."""
+    """Base class for rules code; override any hook."""
 
     def filter_action(self, action: Action, env_state: dict[str, Any]) -> Action | Blocked:
         return action
@@ -269,7 +286,7 @@ def run_app(app: str, group: Any) -> None:
         group()
         return
 
-    env_state: dict[str, Any] = {
+    env_state = EnvState({
         "app": app,
         "subcommand": subcommand,
         "argv": list(argv),
@@ -278,7 +295,7 @@ def run_app(app: str, group: Any) -> None:
         "call_index_total": total_index,
         "call_index_subcommand": subcommand_index,
         "extras": extras,
-    }
+    })
     action = Action(
         name=f"{app}.{subcommand}" if subcommand else app,
         kwargs={"argv": list(argv), "subcommand": subcommand, "text": shlex.join([app, *argv])},
