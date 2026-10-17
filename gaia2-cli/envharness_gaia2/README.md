@@ -50,6 +50,16 @@ Optimizer inputs never include oracle data: trace conversion reads only `result.
 | Q4 | OpenClaw 2026.4.1 defaults: 150 skills / 30000 chars in the prompt (`DEFAULT_MAX_SKILLS_IN_PROMPT`, `DEFAULT_MAX_SKILLS_PROMPT_CHARS`); the smoke report checks every rendered skill is listed. |
 | Q5 | Induction over the Responses API: `reasoning_effort=low` parses; gpt-5.5 rejects `minimal`. |
 
+## v2 smoke result (2026-10-17)
+
+`envh2-oc-smoke-20261017T103232Z` (2 rounds × 6 train tasks, K=5, max_k 1): all 10 checks PASS
+(11 = cost info); 110 corpus + 4 eval rollouts (cap 200); 1 accepted candidate; levers used A
+(block/argv rewrite), T and S0; banks ours_r1 11 → ours_r2 12 (augment), orig 13; round 2 ran on
+bank_1 (digest checked, all skills listed in the prompt). Report with run notes (two aborted
+attempts and their fixes `663ab77`, `2adad8a`; designer observations):
+`reports/envh2-oc-smoke-20261017T103232Z.md`. Stage end to end in the loop (scripted designer,
+`0wlkxc`, K=2): both setup writes ran as `Event-ENV-setup-*`, rollouts judged successful.
+
 ## v1 Phase 0 checks (2026-10-16)
 
 | ID | Result |
