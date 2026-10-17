@@ -1,4 +1,4 @@
-"""Smoke report: evaluate the section-9 checklist on a finished run directory.
+"""Smoke report: evaluate the plan-v2 section-9 checklist on a finished run directory.
 
     uv run python -m envharness_gaia2.report --run-dir <run> [--protected-image TAG=ID ...]
 
@@ -100,6 +100,9 @@ def _results(root: Path) -> list[Path]:
     return sorted(root.rglob("result.json")) if root.is_dir() else []
 
 
+INTERVENTION_KINDS = ("blocked", "action_rewritten", "transition_modified", "observation_modified")
+
+
 class Report:
     def __init__(self, run_dir: Path, protected_images: dict[str, str]) -> None:
         self.run = run_dir
@@ -107,6 +110,10 @@ class Report:
         self.config = _json(run_dir / "config.resolved.json")
         self.state = _json(run_dir / "budget.json")
         self.lineage = _jsonl(run_dir / "lineage.jsonl")
+        self.eval = _json(run_dir / "eval" / "summary.json")
+        self.rounds = sorted((p for p in (run_dir / "rounds").glob("r*") if p.is_dir()), key=lambda p: int(p.name[1:]))
+        repo = Path(self.config.get("config", {}).get("meta_are_repo", ""))
+        self.repo = repo
         self.sections: list[tuple[str, bool | None, list[str]]] = []
 
     def add(self, title: str, ok: bool | None, lines: list[str]) -> None:
@@ -114,108 +121,135 @@ class Report:
 
     # 1 ---------------------------------------------------------------------------
     def seed_eval(self) -> None:
-        summary = _json(self.run / "final_eval" / "summary.json")
-        seed = summary.get("seed", {})
-        rows = [r for rs in seed.get("cases", {}).values() for r in rs]
-        valid = all(r["disposition"] in ("success", "task_failure") for r in rows) and bool(rows)
-        digest_ok = all(r.get("harness_digest") == self.state.get("seed_digest") for r in rows)
-        self.add("1. Seed evaluation is valid", valid and digest_ok,
-                 [f"- {sid}: {[(r['disposition'], r['success']) for r in rs]}" for sid, rs in seed.get("cases", {}).items()]
+        arm = self.eval.get("nobank", {})
+        rows = [r for rs in arm.get("cases", {}).values() for r in rs]
+        valid = bool(rows) and all(r["disposition"] in ("success", "task_failure") for r in rows)
+        digest_ok = arm.get("harness_digest") == self.state.get("seed_digest") and arm.get("digest_ok", False)
+        self.add("1. Seed (nobank) evaluation is valid", valid and digest_ok,
+                 [f"- {sid}: {[(r['disposition'], r['success']) for r in rs]}" for sid, rs in arm.get("cases", {}).items()]
                  + [f"- harness_digest == seed digest ({self.state.get('seed_digest')}): {digest_ok}",
-                    f"- evidence: {self.run / 'final_eval' / 'summary.json'}"])
+                    f"- evidence: {self.run / 'eval' / 'summary.json'}"])
 
     # 2 + 3 -----------------------------------------------------------------------
     def envrigger_and_judge(self) -> None:
-        round1 = self.run / "rounds" / "r1"
-        traces = _jsonl(self.run / "traces.jsonl")
+        k = int(self.config.get("config", {}).get("envrigger", {}).get("k_per_candidate", 5))
         lines, ok = [], True
-        tasks = sorted({t for r in self.lineage if r["round"] == 1 for t in r["task_ids"]})
-        for task in tasks:
-            n_base = sum(1 for t in traces if t.get("rollout_seed") == task and t.get("kind") == "baseline")
-            lines.append(f"- task {task}: baseline traces (all rounds) = {n_base}")
-            ok &= n_base >= 3
-        decisions = []
-        for batch in sorted(p for p in round1.iterdir() if p.is_dir()) if round1.is_dir() else []:
-            for event in _jsonl(batch / "orchestrator.jsonl"):
-                if event.get("kind") in ("task_skipped_passthrough", "mutator_decision", "task_aborted", "candidate_proposed"):
-                    decisions.append(f"{batch.name}: {event['kind']} {event.get('decision') or event.get('rationale', '')[:80]}")
-        lines += [f"  - {d}" for d in decisions] or ["  - (no designer events)"]
-        variant_results = [p for p in _results(round1) if "/cand_" in str(p)]
+        decisions = 0
+        for round_dir in self.rounds:
+            for task_dir in sorted((round_dir / "corpus").glob("task_*")):
+                traces = _jsonl(task_dir / "traces.jsonl")
+                n_base = sum(1 for t in traces if t.get("kind") == "baseline")
+                events = [e for e in _jsonl(task_dir / "orchestrator.jsonl")
+                          if e.get("kind") in ("task_skipped_passthrough", "mutator_decision", "task_aborted")]
+                decisions += len(events)
+                summary = ", ".join(f"{e['kind'].replace('mutator_', '')}:{e.get('decision') or (e.get('rationale') or '')[:40]}"
+                                    for e in events) or "-"
+                kinds = sorted({t.get("kind") for t in traces if t.get("kind") != "baseline"})
+                lines.append(f"- {round_dir.name}/{task_dir.name}: baseline={n_base}/{k} decisions=[{summary}] other_kinds={kinds}")
+                ok &= n_base == k and (task_dir / "DONE").is_file()
+        variant_results = [p for p in _results(self.run / "rounds") if "/cand_" in str(p)]
         with_digest = sum(1 for p in variant_results if _json(p).get("env_rules_digest"))
-        applied = [(p, e) for p in round1.rglob("env_rules_applied.jsonl") for e in _jsonl(p)]
-        interventions = [e for _, e in applied if e.get("kind") in ("blocked", "modified")]
+        applied = [e for p in (self.run / "rounds").rglob("env_rules_applied.jsonl") for e in _jsonl(p)]
+        setups = [e for p in (self.run / "rounds").rglob("env_rules_setup.jsonl") for e in _jsonl(p)]
+        by_kind = {kind: sum(1 for e in applied if e.get("kind") == kind) for kind in INTERVENTION_KINDS}
         lines += [f"- variant rollouts: {len(variant_results)}, with env_rules_digest: {with_digest}",
-                  f"- interventions (blocked/modified): {len(interventions)} "
-                  f"({sum(e['kind'] == 'blocked' for e in interventions)} blocked)"]
-        ok &= bool(decisions) and with_digest == len(variant_results) and bool(interventions)
-        self.add("2. EnvRigger ran (baseline -> design -> variant rollouts -> decision)", ok, lines)
+                  f"- interventions by lever: {by_kind}, setup actions executed: {len(setups)} "
+                  f"(exit!=0: {sum(1 for e in setups if e.get('exit_code') != 0)})"]
+        ok &= decisions > 0 and with_digest == len(variant_results) and (sum(by_kind.values()) + len(setups)) > 0
+        self.add("2. EnvRigger ran (baseline K -> design -> variant rollouts -> decision)", ok, lines)
 
-        all_applied = [(p, e) for p in (self.run / "rounds").rglob("env_rules_applied.jsonl") for e in _jsonl(p)]
-        violations = [e for _, e in all_applied if e.get("kind") == "write_observation_ignored"]
-        functions = command_functions(Path(self.config.get("config", {}).get("meta_are_repo", ""))
-                                      / "gaia2-cli" / "cli" / "gaia2_cli" / "apps")
-        rollouts = sorted({p.parent for p, e in all_applied if e.get("kind") == "blocked"})
-        leaked_blocks = sum(leaked_blocked_writes(d, functions) for d in rollouts)
-        blocked_writes = sum(1 for _, e in all_applied if e.get("kind") == "blocked"
-                             and functions.get((e.get("app"), e.get("subcommand"))) is not None
-                             and any(ev.get("fn") == functions[(e["app"], e["subcommand"])] and ev.get("w") is True
-                                     for ev in _jsonl(_.parent / "events.jsonl")))
-        errors = [p for p in self.run.rglob("env_rules_errors.log") if p.stat().st_size > 0]
-        self.add("3. Judge integrity", leaked_blocks == 0 and not errors and bool(functions),
-                 [f"- rollouts with blocked calls (all rounds): {len(rollouts)}, "
-                  f"blocked calls of a write command that also wrote elsewhere in the rollout: {blocked_writes}",
-                  f"- writes only a blocked call could have produced: {leaked_blocks}",
-                  f"- ignored write-output rewrites: {len(violations)}",
-                  f"- non-empty env_rules_errors.log: {[str(p) for p in errors] or 'none'}"])
+        functions = command_functions(self.repo / "gaia2-cli" / "cli" / "gaia2_cli" / "apps")
+        rollouts = sorted({p.parent for p in (self.run / "rounds").rglob("env_rules_applied.jsonl")
+                           if any(e.get("kind") == "blocked" for e in _jsonl(p))})
+        leaked = sum(leaked_blocked_writes(d, functions) for d in rollouts)
+        setup_logs = list((self.run / "rounds").rglob("env_rules_setup.jsonl"))
+        setup_ran = setup_tagged = setup_writes = 0
+        for log in setup_logs:
+            ids = {str(ev.get("event_id")) for ev in _jsonl(log.parent / "events.jsonl")}
+            writes = [ev for ev in _jsonl(log.parent / "events.jsonl")
+                      if str(ev.get("event_id", "")).startswith("Event-ENV-setup-") and ev.get("w")]
+            setup_writes += len(writes)
+            for entry in _jsonl(log):
+                if entry.get("exit_code") == 0:
+                    setup_ran += 1
+                    setup_tagged += f"Event-ENV-setup-{entry.get('index')}" in ids
+        rules_errors = [p for p in (self.run / "rounds").rglob("env_rules_errors.log") if p.stat().st_size > 0]
+        error_traces = sum(1 for p in (self.run / "rounds").rglob("traces.jsonl") for t in _jsonl(p)
+                           if str(t.get("error") or "").startswith("rules_error"))
+        monitors = {
+            "write shown as failed (T exit_code 0->!=0 on wrote)": sum(
+                1 for e in applied if e.get("kind") == "transition_modified" and e.get("wrote")
+                and (e.get("exit_code") or [0, 0])[0] == 0 and (e.get("exit_code") or [0, 0])[1] != 0),
+            "write output rewritten (T/O on wrote)": sum(
+                1 for e in applied if e.get("kind") in ("transition_modified", "observation_modified") and e.get("wrote")),
+            "write command rewritten (A)": sum(
+                1 for e in applied if e.get("kind") == "action_rewritten" and _is_write(e, functions, self.run)),
+        }
+        self.add("3. Judge integrity", leaked == 0 and setup_tagged == setup_ran and error_traces >= len(rules_errors),
+                 [f"- rollouts with blocked calls: {len(rollouts)}; writes only a blocked call could have produced: {leaked}",
+                  f"- setup actions that ran: {setup_ran}, logged as Event-ENV-setup-* (ENV) events: {setup_tagged} "
+                  f"({setup_writes} setup writes, excluded from the judge's AGENT writes)",
+                  f"- non-empty env_rules_errors.log: {len(rules_errors)}; traces marked rules_error: {error_traces}",
+                  f"- integrity monitors (observed, not a failure condition): {monitors}"])
 
     # 4 ---------------------------------------------------------------------------
     def designer_rendering(self) -> None:
         calls = _jsonl(self.run / "designer_calls.jsonl")
         texts = [json.dumps(c.get("messages", [])) for c in calls]
         with_cmd = sum(1 for t in texts if re.search(r"<cmd>[^<]+</cmd>", t))
-        empty_action = sum(t.count("<action></action>") for t in texts)
-        self.add("4. Designer sees real commands", with_cmd > 0 and empty_action == 0,
-                 [f"- designer calls: {len(calls)}, with non-empty <cmd>: {with_cmd}, empty <action>: {empty_action}"])
+        empty = sum(t.count("<cmd></cmd>") for t in texts)
+        self.add("4. Designer sees real commands", with_cmd > 0 and empty == 0,
+                 [f"- designer calls: {len(calls)}, with a non-empty <cmd>: {with_cmd}, empty <cmd>: {empty}"])
 
     # 5 + 6 -----------------------------------------------------------------------
-    def bank_and_coevolution(self) -> None:
-        tool = Path(self.config.get("config", {}).get("meta_are_repo", "")) / "gaia2-cli" / "shared" / "harness_tool.py"
-        policy = Path(self.config.get("config", {}).get("meta_are_repo", "")) / self.config.get("config", {}).get("harness_policy", "")
+    def banks_and_injection(self) -> None:
+        tool = self.repo / "gaia2-cli" / "shared" / "harness_tool.py"
+        policy = self.repo / self.config.get("config", {}).get("harness_policy", "")
         seed = self.run / "seed_harness"
         lines, ok = [], True
-        for record in self.lineage:
-            batch = self.run / "rounds" / f"r{record['round']}" / f"b{record['batch']}"
-            selected = json.loads((batch / "selected.json").read_text()) if (batch / "selected.json").is_file() else []
-            harness = batch / "harness"
+        for round_dir in self.rounds:
+            stats = _json(round_dir / "bank_build.json")
+            for name, st in stats.items():
+                lines.append(f"- {round_dir.name} {name}: pairs={st.get('pairs')} empty_pairs={st.get('empty_pairs')} "
+                             f"items={st.get('items')} (before dedup {st.get('items_before_dedup')}) tiers={st.get('tiers')}")
+            harness = round_dir / "harness"
             check = subprocess.run([sys.executable, str(tool), "check", str(harness), "--policy", str(policy)],
                                    capture_output=True, text=True)
             outside = [p.relative_to(seed).as_posix() for p in seed.rglob("*")
                        if p.is_file() and p.relative_to(seed).parts[0] != "skills"
                        and not filecmp.cmp(p, harness / p.relative_to(seed), shallow=False)]
-            lines.append(f"- r{record['round']}b{record['batch']}: selected={len(selected)} n_skills={record['n_skills']} "
-                         f"consolidated={record['consolidated']} check={'ok' if check.returncode == 0 else check.stderr.strip()} "
-                         f"non-skill diffs={outside or 'none'}")
-            ok &= 0 <= len(selected) <= 3 and check.returncode == 0 and not outside
-        self.add("5. Skill bank updates", ok and bool(self.lineage), lines)
+            bank = _jsonl(self.run / "banks" / f"{'ours_' + round_dir.name}.jsonl")
+            dims = {len(item.get("embedding") or []) for item in bank}
+            n_skills = len(list(harness.glob("skills/*/SKILL.md")))
+            lines.append(f"- {round_dir.name} bank: {len(bank)} items, embedding dims {sorted(dims)}, rendered skills "
+                         f"{n_skills}, harness check {'ok' if check.returncode == 0 else check.stderr.strip()}, "
+                         f"non-skill diffs {outside or 'none'}")
+            ok &= check.returncode == 0 and not outside and n_skills == len(bank) and (not bank or dims == {max(dims)} and max(dims) > 0)
+        orig = _jsonl(self.run / "banks" / "orig.jsonl")
+        lines.append(f"- orig bank: {len(orig)} items")
+        self.add("5. Skill banks (SWE-bench bank_distillation port)", ok and bool(self.rounds), lines)
 
         lines, ok = [], True
-        names_seen = cat_seen = False
-        for prev, nxt in zip(self.lineage, self.lineage[1:]):
-            batch = self.run / "rounds" / f"r{nxt['round']}" / f"b{nxt['batch']}"
-            digests = {_json(p).get("harness_digest") for p in _results(batch) if "/baseline/" in str(p)}
-            match = digests == {prev["skills_digest"]}
+        for prev, nxt in zip(self.rounds, self.rounds[1:]):
+            expected = (prev / "harness.digest").read_text().strip() if (prev / "harness.digest").is_file() else None
+            digests = {_json(p).get("harness_digest") for p in _results(nxt / "corpus") if "/baseline/" in str(p)}
+            match = digests == {expected}
+            lines.append(f"- {nxt.name} corpus ran on {prev.name}'s bank harness ({expected}): {match}")
             ok &= match
-            lines.append(f"- r{nxt['round']}b{nxt['batch']} baseline harness_digest == r{prev['round']}b{prev['batch']} snapshot: {match}")
-            skill_names = [p.parent.name for p in (self.run / "rounds" / f"r{prev['round']}" / f"b{prev['batch']}" / "harness" / "skills").glob("*/SKILL.md")]
-            for trace in batch.rglob("trace.jsonl"):
-                text = trace.read_text(encoding="utf-8", errors="replace")
-                if skill_names and all(name in text for name in skill_names[:1]):
-                    names_seen = True
-                if re.search(r"cat [^\"]*skills/[a-z0-9-]+/SKILL\.md", text):
-                    cat_seen = True
-        lines += [f"- skill names present in later system prompts: {names_seen}",
-                  f"- agent read a SKILL.md (cat .../SKILL.md): {cat_seen}"]
-        self.add("6. Co-evolution (next batch runs on the updated skills)", ok and names_seen and len(self.lineage) > 1, lines)
+        cat_seen = False
+        for arm, data in self.eval.items():
+            names = [p.parent.name for p in Path(data.get("harness_dir", "")).glob("skills/*/SKILL.md")]
+            traces = [p for p in (self.run / "eval" / arm).rglob("trace.jsonl")]
+            text = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in traces)
+            listed = sum(1 for name in names if name in text)
+            cat_seen |= bool(re.search(r"skills/[a-z0-9-]+/SKILL\.md", text))
+            lines.append(f"- eval {arm}: {data.get('n_skills')} skills, listed in the student's prompt: {listed}/{len(names)}, "
+                         f"digest ok: {data.get('digest_ok')}")
+            ok &= listed == len(names) and bool(data.get("digest_ok"))
+        for record in self.lineage[1:]:
+            lines.append(f"- round {record['round']} augment-mode new items: {len(record.get('new_items', []))}")
+        lines.append(f"- student read a SKILL.md in eval: {cat_seen}")
+        self.add("6. Injection and co-evolution", ok, lines)
 
     # 7 ---------------------------------------------------------------------------
     def leaks(self) -> None:
@@ -228,7 +262,7 @@ class Report:
             ids = len(_SCENARIO_ID.findall(text))
             lines.append(f"- {name}: {counts}, scenario ids: {ids}")
             ok &= not any(counts[term] for term in LEAK_TERMS) and ids == 0
-        skills_text = "\n".join(p.read_text() for p in self.run.rglob("harness/skills/*/SKILL.md"))
+        skills_text = "\n".join(p.read_text() for p in self.run.rglob("skills/*/SKILL.md"))
         skill_ids = len(_SCENARIO_ID.findall(skills_text))
         lines.append(f"- scenario ids in rendered skills: {skill_ids}")
         self.add("7. No oracle/scenario leakage into optimizer inputs or skills", ok and skill_ids == 0, lines)
@@ -236,16 +270,18 @@ class Report:
     # 8-11 ------------------------------------------------------------------------
     def budget_eval_cleanup(self) -> None:
         total = int(self.state.get("rollouts", 0)) + int(self.state.get("eval_rollouts", 0))
-        self.add("8. Budget", total <= self.state.get("max_rollouts", 200) and self.state.get("batches", 0) <= self.state.get("max_iterations", 5),
-                 [f"- rollouts: co-evolution {self.state.get('rollouts')} + final eval {self.state.get('eval_rollouts')} = {total} "
-                  f"(cap {self.state.get('max_rollouts')}); batches {self.state.get('batches')} (cap {self.state.get('max_iterations')})"])
-        summary = _json(self.run / "final_eval" / "summary.json")
-        rows = ["| harness | valid rollouts | success rate | per case |", "|---|---|---|---|"]
-        for name, data in summary.items():
+        cap = self.state.get("max_rollouts", 200)
+        self.add("8. Budget", total <= cap,
+                 [f"- rollouts: corpus {self.state.get('rollouts')} + eval {self.state.get('eval_rollouts')} = {total} "
+                  f"(cap {cap}); stopped: {self.state.get('stopped')}"])
+        rows = ["| arm | skills | valid | success rate | per case |", "|---|---|---|---|---|"]
+        for name, data in self.eval.items():
             per_case = {sid: [r["success"] for r in rs] for sid, rs in data.get("cases", {}).items()}
-            rows.append(f"| {name} | {data.get('valid')} | {data.get('success_rate')} | {per_case} |")
-        valid = all(data.get("valid") for data in summary.values()) and set(summary) == {"seed", "final"}
-        self.add("9. Final evaluation (val_smoke)", valid, rows)
+            rows.append(f"| {name} | {data.get('n_skills')} | {data.get('valid')} | {data.get('success_rate')} | {per_case} |")
+        expected_arms = {"nobank", "orig", *(f"ours_{r.name}" for r in self.rounds)}
+        valid = set(self.eval) == expected_arms and all(data.get("valid") for data in self.eval.values())
+        self.add("9. Evaluation (held-out; smoke checks validity only)", valid,
+                 rows + [f"- arms expected {sorted(expected_arms)}, got {sorted(self.eval)}"])
 
         label = f"label=envh.{self.run.name}"
         left = subprocess.run(["sg", "docker", "-c", f"docker ps -aq --filter {label}"], capture_output=True, text=True).stdout.split()
@@ -269,25 +305,26 @@ class Report:
                 task_in += int(usage.get("prompt_tokens") or 0)
                 task_out += int(usage.get("completion_tokens") or 0)
         opt = _jsonl(self.run / "optimizer_usage.jsonl")
+        roles = {name: len(_jsonl(self.run / f"{name}_calls.jsonl")) for name in ("designer", "induce")}
         elapsed = sum(r.get("elapsed_s", 0) for r in self.lineage)
         self.add("11. Cost and time", None, [
             f"- task agent tokens: input {task_in:,}, output {task_out:,}",
-            f"- optimizer tokens ({len(opt)} calls): input {sum(r['input_tokens'] for r in opt):,}, "
+            f"- optimizer calls {roles}; tokens: input {sum(r['input_tokens'] for r in opt):,}, "
             f"output {sum(r['output_tokens'] for r in opt):,} (reasoning {sum(r['reasoning_tokens'] for r in opt):,})",
-            f"- co-evolution wall time: {elapsed / 3600:.2f} h over {len(self.lineage)} batches",
+            f"- rounds wall time: {elapsed / 3600:.2f} h over {len(self.lineage)} rounds (eval not included)",
         ])
 
     def write(self) -> Path:
         self.seed_eval()
         self.envrigger_and_judge()
         self.designer_rendering()
-        self.bank_and_coevolution()
+        self.banks_and_injection()
         self.leaks()
         self.budget_eval_cleanup()
-        out = ["# EnvHarness × OpenClaw GAIA2 smoke report", "",
-               f"- run: `{self.run}`", f"- Meta-ARE HEAD: `{self.config.get('meta_are_head')}`",
+        out = ["# EnvHarness × OpenClaw GAIA2 smoke report (plan v2)", "",
+               f"- run: `{self.run}`", f"- Meta-ARE HEAD at start: `{self.config.get('meta_are_head')}`",
                f"- image: `{self.config.get('image')}` ({self.config.get('image_id')})",
-               f"- seed digest: `{self.state.get('seed_digest')}`, final digest: `{self.state.get('harness_digest')}`", ""]
+               f"- seed digest: `{self.state.get('seed_digest')}`", ""]
         for title, ok, lines in self.sections:
             mark = "PASS" if ok else ("INFO" if ok is None else "FAIL")
             out += [f"## {title} — {mark}", "", *lines, ""]
@@ -298,6 +335,20 @@ class Report:
         path = self.run / "smoke_report.md"
         path.write_text("\n".join(out) + "\n", encoding="utf-8")
         return path
+
+
+def _is_write(entry: dict, functions: dict[tuple[str, str], str], run: Path) -> bool:
+    """Whether an intervened subcommand is a state-changing one (seen as a write anywhere in the run)."""
+    function = functions.get((entry.get("app"), entry.get("subcommand")))
+    if function is None:
+        return False
+    if function not in _WRITE_CACHE:
+        _WRITE_CACHE[function] = any(ev.get("fn") == function and ev.get("w")
+                                     for p in run.rglob("events.jsonl") for ev in _jsonl(p))
+    return _WRITE_CACHE[function]
+
+
+_WRITE_CACHE: dict[str, bool] = {}
 
 
 def main(argv: list[str] | None = None) -> int:
