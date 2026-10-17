@@ -76,7 +76,12 @@ Not reachable by hooks: the user's request and notifications (delivered by OpenC
 Setup (in_env_actions, S0): app CLI calls run by the ENVIRONMENT before the student
 starts, e.g. {"name": "exec", "kwargs_json": "{\\"command\\": \\"contacts add-new-contact --first-name Ana\\"}"}.
 One app call per item (no shell syntax), at most 20. They are environment events:
-they change the initial app state but are not the student's actions.
+they change the initial app state but are not the student's actions. They run
+instantly at the scenario's start time, before any scheduled environment event and
+before the student starts: they cannot wait for or trigger later events, read
+commands among them have no effect, and their output is not shown to anyone. A
+failing command (e.g. an invalid option) is skipped, so use exact `<app> <subcommand>
+--help` options.
 """
 
 

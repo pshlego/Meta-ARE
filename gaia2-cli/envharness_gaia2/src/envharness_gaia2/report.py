@@ -152,9 +152,11 @@ class Report:
         applied = [e for p in (self.run / "rounds").rglob("env_rules_applied.jsonl") for e in _jsonl(p)]
         setups = [e for p in (self.run / "rounds").rglob("env_rules_setup.jsonl") for e in _jsonl(p)]
         by_kind = {kind: sum(1 for e in applied if e.get("kind") == kind) for kind in INTERVENTION_KINDS}
+        setup_ok = sum(1 for e in setups if e.get("exit_code") == 0)
         lines += [f"- variant rollouts: {len(variant_results)}, with env_rules_digest: {with_digest}",
-                  f"- interventions by lever: {by_kind}, setup actions executed: {len(setups)} "
-                  f"(exit!=0: {sum(1 for e in setups if e.get('exit_code') != 0)})"]
+                  f"- interventions by lever: {by_kind}",
+                  f"- Stage (setup) actions: {len(setups)} executed, {setup_ok} succeeded, "
+                  f"{len(setups) - setup_ok} failed (designer command errors; see env_rules_setup.jsonl)"]
         ok &= decisions > 0 and with_digest == len(variant_results) and (sum(by_kind.values()) + len(setups)) > 0
         self.add("2. EnvRigger ran (baseline K -> design -> variant rollouts -> decision)", ok, lines)
 
@@ -187,8 +189,9 @@ class Report:
         }
         self.add("3. Judge integrity", leaked == 0 and setup_tagged == setup_ran and error_traces >= len(rules_errors),
                  [f"- rollouts with blocked calls: {len(rollouts)}; writes only a blocked call could have produced: {leaked}",
-                  f"- setup actions that ran: {setup_ran}, logged as Event-ENV-setup-* (ENV) events: {setup_tagged} "
-                  f"({setup_writes} setup writes, excluded from the judge's AGENT writes)",
+                  f"- successful setup actions: {setup_ran}, logged as Event-ENV-setup-* (ENV) events: {setup_tagged} "
+                  f"({setup_writes} setup writes, excluded from the judge's AGENT writes)"
+                  + ("" if setup_ran else " -- no successful setup in this run; Stage end-to-end is not exercised here"),
                   f"- non-empty env_rules_errors.log: {len(rules_errors)}; traces marked rules_error: {error_traces}",
                   f"- integrity monitors (observed, not a failure condition): {monitors}"])
 
