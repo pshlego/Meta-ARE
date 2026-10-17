@@ -65,7 +65,12 @@ env_state (env_state.app or env_state["app"]; read-only except extras):
   executed_argv: list[str]           # (T/O only) argv that actually ran
   extras: dict                       # JSON scratch dict persisted across calls (write here)
 Rules, Action, Blocked, Observation, EnvResponse are pre-bound; imports: re, json,
-random, hashlib, itertools, textwrap only; no file, OS or network access.
+random, hashlib, itertools, textwrap only; no file, OS or network access. A static
+check rejects (and the rollouts then fail with RulesCheckError): open, eval, exec,
+compile, globals, locals, vars, setattr, delattr, input, any name or attribute
+starting with "__", and references to os/sys/subprocess/socket/shutil/pathlib/io.
+getattr/hasattr work for public names only. env_state, obs.data and response.info
+are dicts (env_state also allows attribute access): use env_state.get("key").
 Not reachable by hooks: the user's request and notifications (delivered by OpenClaw).
 
 Setup (in_env_actions, S0): app CLI calls run by the ENVIRONMENT before the student

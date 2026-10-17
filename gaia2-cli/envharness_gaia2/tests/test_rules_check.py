@@ -101,3 +101,9 @@ def test_setup_commands_are_single_app_calls():
         setup_commands([Action(name="contacts", kwargs={"command": "contacts get-contacts"})])
     with pytest.raises(RulesCheckError, match="scenario"):
         setup_commands(ok, forbidden_ids=["Bxx", "A;B"])
+
+
+def test_dunder_names_are_rejected_but_public_getattr_is_allowed():
+    with pytest.raises(RulesCheckError, match="dunder name"):
+        check_rules_code("class _Rules(Rules):\n    def filter_action(self, a, s):\n        return __builtins__['open']\n")
+    check_rules_code("class _Rules(Rules):\n    def filter_action(self, a, s):\n        return getattr(s, 'app', a)\n")

@@ -26,7 +26,7 @@ FORBIDDEN_METHODS = frozenset({"reset", "step", "observe", "evaluate", "save_sta
 FORBIDDEN_NAMES = frozenset(
     {
         "open", "eval", "exec", "compile", "__import__", "globals", "locals", "vars",
-        "getattr", "setattr", "delattr", "input", "breakpoint", "exit", "quit",
+        "setattr", "delattr", "input", "breakpoint", "exit", "quit",
     }
 )
 FORBIDDEN_MODULE_ROOTS = frozenset({"os", "sys", "subprocess", "socket", "shutil", "pathlib", "io", "builtins"})
@@ -40,6 +40,9 @@ def split_command(command: str) -> list[str]:
     lexer.whitespace_split = True
     return list(lexer)
 _SCENARIO_ID = re.compile(r"scenario_universe_\d+_[0-9a-z]+")
+
+
+# getattr/hasattr are allowed: the container binds versions that refuse "_"-prefixed names.
 
 
 class RulesCheckError(ValueError):
@@ -78,6 +81,8 @@ def check_rules_code(code: str, *, forbidden_ids: Iterable[str] = ()) -> None:
                     raise RulesCheckError(f"rules_code may import only {sorted(ALLOWED_IMPORTS)}; got `{name}`")
         elif isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
             raise RulesCheckError(f"rules_code may not use `{node.id}`")
+        elif isinstance(node, ast.Name) and node.id.startswith("__"):
+            raise RulesCheckError(f"rules_code may not use dunder name `{node.id}`")
         elif isinstance(node, ast.Attribute) and node.attr.startswith("__") and node.attr.endswith("__"):
             raise RulesCheckError(f"rules_code may not access dunder attribute `{node.attr}`")
         elif isinstance(node, ast.Name) and node.id in FORBIDDEN_MODULE_ROOTS:

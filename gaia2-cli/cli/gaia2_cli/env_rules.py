@@ -123,6 +123,19 @@ class RulesCodeError(Exception):
     """The rules source does not satisfy the ``_Rules(Rules)`` contract."""
 
 
+def _public_getattr(obj: Any, name: str, *default: Any) -> Any:
+    """``getattr`` for rules code: public attribute names only (no dunder escapes)."""
+    if not isinstance(name, str) or name.startswith("_"):
+        raise AttributeError(f"rules code may only read public attributes, not {name!r}")
+    return getattr(obj, name, *default)
+
+
+def _public_hasattr(obj: Any, name: str) -> bool:
+    if not isinstance(name, str) or name.startswith("_"):
+        return False
+    return hasattr(obj, name)
+
+
 def load_rules_class(source: str) -> type[Rules]:
     """Compile rules source in the same namespace contract as envharness ``load_rules_subclass``."""
     namespace: dict[str, Any] = {
@@ -131,6 +144,8 @@ def load_rules_class(source: str) -> type[Rules]:
         "Blocked": Blocked,
         "Observation": Observation,
         "EnvResponse": EnvResponse,
+        "getattr": _public_getattr,
+        "hasattr": _public_hasattr,
     }
     try:
         exec(compile(source, "<env_rules>", "exec"), namespace)  # noqa: S102 - trusted, verified host-side

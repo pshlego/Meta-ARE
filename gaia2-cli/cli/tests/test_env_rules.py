@@ -289,3 +289,14 @@ def test_env_state_supports_attribute_access(env, monkeypatch, capsys):
     assert _run(monkeypatch, capsys, SEARCH)[0] == 1
     assert not (home / "errors.log").exists()
     assert json.loads((home / "state.json").read_text())["extras"] == {"n": 1}
+
+
+def test_rules_getattr_is_public_only():
+    cls = env_rules.load_rules_class(
+        "class _Rules(Rules):\n"
+        "    def filter_action(self, action, env_state):\n"
+        "        return getattr(env_state, env_state['key'], None)\n"
+    )
+    assert cls().filter_action(None, env_rules.EnvState(key="app", app="calendar")) == "calendar"
+    with pytest.raises(AttributeError):
+        cls().filter_action(None, env_rules.EnvState(key="__class__"))
