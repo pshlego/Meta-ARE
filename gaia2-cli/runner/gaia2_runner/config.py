@@ -85,6 +85,9 @@ class AgentConfig:
     harness_dir: str | None = None
     # Directory holding an env-rules ``rules.py`` (gaia2_cli/env_rules.py).
     env_rules_dir: str | None = None
+    # Harness policy JSON replacing harness/policy/openclaw_overlay_policy.json
+    # for host validation and inside the container (e.g. larger skill limits).
+    harness_policy: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,6 +398,7 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
             "reasoning_effort",
             "harness_dir",
             "env_rules_dir",
+            "harness_policy",
         },
     )
     _validate_allowed_keys(
@@ -604,6 +608,12 @@ def load_runner_toml_config(config_path: str) -> RunnerTomlConfig:
             name="[agent].env_rules_dir",
             must_exist=True,
             must_be_dir=True,
+        ),
+        harness_policy=_resolve_path(
+            _as_optional_str(agent_table.get("harness_policy"), "[agent].harness_policy"),
+            base_dir=base_dir,
+            name="[agent].harness_policy",
+            must_exist=True,
         ),
     )
 

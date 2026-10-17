@@ -1500,6 +1500,7 @@ def _build_execution_config(
     max_scenario_duration: int | None = None,
     harness_dir: str | None = None,
     env_rules_dir: str | None = None,
+    harness_policy: str | None = None,
 ) -> tuple[
     ScenarioExecutionConfig,
     str | None,
@@ -1592,13 +1593,19 @@ def _build_execution_config(
     result_metadata: JsonDict = {}
     if harness_dir:
         from .container_env import detect_profile
-        from .harness import CONTAINER_HARNESS_DIR, check_and_digest
+        from .harness import (
+            CONTAINER_HARNESS_DIR,
+            CONTAINER_HARNESS_POLICY,
+            check_and_digest,
+            policy_digest,
+        )
 
         if detect_profile(image).agent_home is None:
             raise click.UsageError("--harness-dir is only supported for OpenClaw images")
         harness_path = Path(harness_dir).expanduser().resolve()
+        policy_path = Path(harness_policy).expanduser().resolve() if harness_policy else None
         try:
-            harness_digest = check_and_digest(harness_path)
+            harness_digest = check_and_digest(harness_path, policy_path)
         except ValueError as exc:
             raise click.UsageError(f"Invalid harness {harness_path}: {exc}") from exc
         volumes = (*volumes, f"{harness_path}:{CONTAINER_HARNESS_DIR}:ro")
@@ -1608,6 +1615,13 @@ def _build_execution_config(
             "harness_dir": str(harness_path),
             "harness_digest": harness_digest,
         }
+        if policy_path is not None:
+            # Replaces the policy baked into the image, which both the
+            # entrypoint (harness check) and openclaw_config (overlay) read.
+            volumes = (*volumes, f"{policy_path}:{CONTAINER_HARNESS_POLICY}:ro")
+            result_metadata["harness_policy_digest"] = policy_digest(policy_path)
+    elif harness_policy:
+        raise click.UsageError("[agent].harness_policy requires [agent].harness_dir")
 
     # Environment-side EnvHarness bundle (gaia2_cli/env_rules.py rules.py and/or
     # gaia2_cli/env_setup.py setup.json), installed under /var/gaia2 by the
@@ -2878,6 +2892,7 @@ def run_config(config_path: str, retry: bool, dry_run: bool) -> None:
             max_scenario_duration=config.run.max_scenario_duration,
             harness_dir=config.agent.harness_dir,
             env_rules_dir=config.agent.env_rules_dir,
+            harness_policy=config.agent.harness_policy,
         )
 
         run_config_base: JsonDict = {
@@ -2965,6 +2980,7 @@ def run_config(config_path: str, retry: bool, dry_run: bool) -> None:
             max_scenario_duration=config.run.max_scenario_duration,
             harness_dir=config.agent.harness_dir,
             env_rules_dir=config.agent.env_rules_dir,
+            harness_policy=config.agent.harness_policy,
         )
 
         run_config_base = {

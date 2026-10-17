@@ -109,6 +109,16 @@ def test_budget_stops_between_tasks(tmp_path):
     assert not (run_dir / "rounds" / "r2").exists() and set(result["eval"]) == {"nobank", "orig", "ours_r1"}
 
 
+def test_runner_gets_the_skillbank_policy(tmp_path):
+    from envharness_gaia2.gaia2_run import Gaia2Runner
+
+    cfg = load_config(_config(tmp_path), verify_image=False)
+    assert cfg.run.harness_policy == cfg.harness_policy
+    toml = Gaia2Runner(cfg.run, harness_digest_fn=str, label_prefix="t")._toml(
+        tmp_path / "d", tmp_path / "o", tmp_path / "h", None, 1)
+    assert f'harness_policy = "{cfg.harness_policy}"' in toml
+
+
 def test_config_is_strict(tmp_path):
     raw = yaml.safe_load(CONFIG.read_text())
     raw["run"]["max_concurrent"] = 1

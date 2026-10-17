@@ -172,6 +172,7 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
         process_completion_grace_seconds=int(run["process_completion_grace_seconds"]),
         max_concurrent=int(run["max_concurrent"]),
         infrastructure_retries=int(run["infrastructure_retries"]),
+        harness_policy=policy,
     )
     if settings.max_concurrent < 2:
         # concurrency 1 makes gaia2-runner use fixed host ports (8090/18789),

@@ -10,6 +10,7 @@ identical digest and validation rules.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ _GAIA2_CLI_ROOT = Path(__file__).resolve().parents[2]
 HARNESS_TOOL_PATH = _GAIA2_CLI_ROOT / "shared" / "harness_tool.py"
 HARNESS_POLICY_PATH = _GAIA2_CLI_ROOT / "harness" / "policy" / "openclaw_overlay_policy.json"
 CONTAINER_HARNESS_DIR = "/opt/gaia2_harness"
+CONTAINER_HARNESS_POLICY = "/opt/gaia2_harness_policy.json"
 
 
 def harness_tool() -> ModuleType:
@@ -34,8 +36,12 @@ def harness_tool() -> ModuleType:
     return module
 
 
-def check_and_digest(harness_dir: str | Path) -> str:
-    """Validate a harness directory against the repository policy; return its digest."""
+def check_and_digest(harness_dir: str | Path, policy: str | Path | None = None) -> str:
+    """Validate a harness directory against ``policy`` (default: the repository policy); return its digest."""
     tool = harness_tool()
-    tool.check(Path(harness_dir), tool.load_policy(HARNESS_POLICY_PATH))
+    tool.check(Path(harness_dir), tool.load_policy(Path(policy) if policy else HARNESS_POLICY_PATH))
     return tool.digest(Path(harness_dir))
+
+
+def policy_digest(policy: str | Path) -> str:
+    return "sha256:" + hashlib.sha256(Path(policy).read_bytes()).hexdigest()

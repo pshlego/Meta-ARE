@@ -76,6 +76,9 @@ class RunSettings:
     process_completion_grace_seconds: int
     max_concurrent: int
     infrastructure_retries: int
+    # Policy the runner and the container validate the harness against (the
+    # skill-bank limits); None keeps the benchmark's default policy.
+    harness_policy: Path | None = None
 
     @property
     def runner_project(self) -> Path:
@@ -272,6 +275,8 @@ class Gaia2Runner:
             f"thinking = {q(s.thinking)}",
             f"harness_dir = {q(str(harness_dir))}",
         ]
+        if s.harness_policy is not None:
+            lines.append(f"harness_policy = {q(str(s.harness_policy))}")
         if rules_dir is not None:
             lines.append(f"env_rules_dir = {q(str(rules_dir))}")
         if s.model_endpoint:
