@@ -93,3 +93,44 @@ def test_stalled_agent_is_a_failure_not_an_error(tmp_path):
     assert trace.steps[0].info["failure_category"].startswith("agent_stalled")
     infra = ScenarioResult("scenario_universe_29_t0", 0, "execution_error", None, path, "h", None, "infrastructure")
     assert orch._trace(infra, 0, task_cases[0], Candidate(), "it").error.startswith("execution_error")
+
+
+def test_rules_check_failure_is_an_error_trace_without_rollouts(tmp_path):
+    from envharness.core.types import Action
+
+    task_cases = cases(tmp_path, 1)
+    runner = FakeGaia2Runner(lambda *a: True)
+    orch = _orchestrator(tmp_path, ScriptedHarnessAgent(lambda k, p: Candidate()), runner, task_cases, [0])
+    bad = Candidate(rules_code="import os\nclass _Rules(Rules):\n    pass\n")
+    traces = orch._run(0, bad, iteration_id="it", out_dir=tmp_path / "cand")
+    assert len(traces) == 3 and all(t.error.startswith("execution_error: RulesCheckError") for t in traces)
+    assert runner.calls == [] and (tmp_path / "cand" / "rules_check_error.txt").is_file()
+    shell = Candidate(in_env_actions=[Action(name="exec", kwargs={"command": "contacts get-contacts; rm -rf /"})])
+    assert all(t.error for t in orch._run(0, shell, iteration_id="it", out_dir=tmp_path / "c2")) and runner.calls == []
+
+
+def test_setup_actions_reach_the_runner(tmp_path):
+    from envharness.core.types import Action
+
+    task_cases = cases(tmp_path, 1)
+    runner = FakeGaia2Runner(lambda *a: True)
+    orch = _orchestrator(tmp_path, ScriptedHarnessAgent(lambda k, p: Candidate()), runner, task_cases, [0])
+    setup = Candidate(in_env_actions=[Action(name="exec", kwargs={"command": "contacts add-new-contact --first-name A --last-name B"})])
+    traces = orch._run(0, setup, iteration_id="it", out_dir=tmp_path / "cand")
+    assert [t.success for t in traces] == [True] * 3
+    assert runner.calls[0]["setup"] == ["contacts add-new-contact --first-name A --last-name B"]
+    assert runner.calls[0]["rules"] is None
+
+
+def test_rules_error_survives_the_stall_mapping(tmp_path):
+    from envharness_gaia2.gaia2_run import ScenarioResult
+    from helpers import write_scenario_output
+
+    task_cases = cases(tmp_path, 1)
+    orch = _orchestrator(tmp_path, ScriptedHarnessAgent(lambda k, p: Candidate()), FakeGaia2Runner(lambda *a: False),
+                         task_cases, [0])
+    path = write_scenario_output(tmp_path / "out" / "scenario_universe_29_t0", success=None)
+    (path / "env_rules_errors.log").write_text("[t] contacts filter_action raised; running unchanged\nTraceback ...\n")
+    stalled = ScenarioResult("scenario_universe_29_t0", 0, "task_failure", None, path, "h", None, "agent stalled")
+    trace = orch._trace(stalled, 0, task_cases[0], Candidate(), "it")
+    assert trace.error.startswith("rules_error: [t] contacts filter_action raised")

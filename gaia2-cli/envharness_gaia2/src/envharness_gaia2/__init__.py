@@ -1,9 +1,10 @@
-"""EnvHarness-style skill-bank co-evolution for OpenClaw on GAIA2.
+"""EnvHarness (arXiv 2608.19880) on GAIA2 with OpenClaw as the student.
 
-The OpenClaw seed harness (gaia2-cli/harness/openclaw) is the policy's
-harness; only its ``skills/`` directory evolves. Environment variations are
-EnvHarness "Rules" executed inside the gaia2-cli container by
-``gaia2_cli.env_rules`` (block-before-execute and read-output filtering).
+A port of the original envharness pipeline (corpus -> skill bank -> eval,
+SWE-bench variant): the designer reshapes the environment with Contract rules
+(A/T/O, ``gaia2_cli.env_rules``) and Stage setup (``gaia2_cli.env_setup``)
+inside the gaia2-cli container; skills are distilled from the corpus and
+rendered into the OpenClaw harness's ``skills/``.
 """
 
 from pathlib import Path

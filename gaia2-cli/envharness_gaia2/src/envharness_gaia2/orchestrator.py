@@ -18,6 +18,7 @@ from envharness.orchestration.orchestrator import Orchestrator
 from envharness.orchestration.runner import EpisodeRunner, EpisodeSpec
 
 from envharness_gaia2.gaia2_run import CaseRef, Gaia2Runner, ScenarioResult
+from envharness_gaia2.rules_check import RulesCheckError, check_rules_code, setup_commands
 from envharness_gaia2.trace_convert import convert, missing_trace
 
 ENV_IMPORT_PATH = "envharness_gaia2.env:Gaia2ScenarioEnv"
@@ -35,18 +36,43 @@ EXEC_TOOL_SCHEMA = {
     },
 }
 
-ENV_STATE_SCHEMA = (
-    "env_state passed to filter_action/filter_observation:\n"
-    '  app: str              # "calendar", "contacts", "emails", "messages", "chats",\n'
-    '                        # "rent-a-flat", "city", "cabs", "shopping", "cloud-drive"\n'
-    '  subcommand: str       # e.g. "get-contacts", "add-event" ("" or "schema" for probes)\n'
-    "  is_help: bool         # True for --help / schema probes\n"
-    "  call_index_app: int   # 1-based count of the student's calls to this app (incl. probes)\n"
-    "  call_index_total: int # 1-based count of all the student's app calls (incl. probes)\n"
-    "  call_index_subcommand: int  # 1-based count of real calls of this app+subcommand (0 for probes)\n"
-    "Rules objects keep no state across calls (one process per app call); use the counters.\n"
-    "Observation.data for filter_observation: {exit_code: int, wrote: bool}"
-)
+ENV_STATE_SCHEMA = """\
+GAIA2 bridge (OpenClaw student). The student's only tool is `exec` (a shell); the
+GAIA2 apps are CLI commands: calendar, contacts, emails, messages, chats,
+rent-a-flat, city, cabs, shopping, cloud-drive (`<app> <subcommand> --opt value`).
+Your Rules hooks run on every student call of an app CLI (one process per call):
+
+  filter_action(action, env_state) -> Action | Blocked     (A, before execution)
+    action.name == "<app>.<subcommand>"; action.kwargs = {argv: [...], subcommand, text}
+    Blocked(reason=...): the app does NOT run; `reason` is printed on stderr and the
+      command exits 1 (looks like an app error to the student).
+    Return Action(name=action.name, kwargs={**action.kwargs, "argv": [...]}) to run a
+      different argv instead (the app name cannot change).
+  modify_transition(action, response, env_state) -> EnvResponse   (T, after execution)
+    response.observation.text = the command's stdout
+    response.info = {exit_code: int, stderr: str, wrote: bool}   # wrote: it changed app state
+    Return EnvResponse(observation=Observation(text=...), info={...}) to change what the
+      command reports (stdout / stderr / exit_code); the executed effect stays.
+  filter_observation(obs, env_state) -> Observation                (O)
+    obs.text = stdout shown to the student; obs.data = {exit_code, wrote}
+
+env_state (read-only except extras):
+  app: str; subcommand: str ("" or "schema" for probes); argv: list[str]
+  is_help: bool                      # --help / schema probes
+  call_index_app: int                # 1-based count of the student's calls to this app (incl. probes)
+  call_index_total: int              # 1-based count of all app calls (incl. probes)
+  call_index_subcommand: int         # 1-based count of real calls of this app+subcommand (0 for probes)
+  executed_argv: list[str]           # (T/O only) argv that actually ran
+  extras: dict                       # JSON scratch dict persisted across calls (write here)
+Rules, Action, Blocked, Observation, EnvResponse are pre-bound; imports: re, json,
+random, hashlib, itertools, textwrap only; no file, OS or network access.
+Not reachable by hooks: the user's request and notifications (delivered by OpenClaw).
+
+Setup (in_env_actions, S0): app CLI calls run by the ENVIRONMENT before the student
+starts, e.g. {"name": "exec", "kwargs_json": "{\\"command\\": \\"contacts add-new-contact --first-name Ana\\"}"}.
+One app call per item (no shell syntax), at most 20. They are environment events:
+they change the initial app state but are not the student's actions.
+"""
 
 
 class _UnusedRunner(EpisodeRunner):
@@ -62,6 +88,7 @@ class Gaia2Orchestrator(Orchestrator):
         cases: Sequence[CaseRef],
         harness_dir: Path,
         work_dir: Path,
+        forbidden_ids: Sequence[str] = (),
         on_rollouts: Callable[[int], None] | None = None,
         **kwargs,
     ) -> None:
@@ -71,6 +98,7 @@ class Gaia2Orchestrator(Orchestrator):
         self.cases = list(cases)
         self.harness_dir = Path(harness_dir)
         self.work_dir = Path(work_dir)
+        self.forbidden_ids = tuple(forbidden_ids)
         self.on_rollouts = on_rollouts
 
     # -- overrides --------------------------------------------------------------
@@ -79,7 +107,7 @@ class Gaia2Orchestrator(Orchestrator):
             task_id,
             Candidate(rules_code="", in_env_actions=[]),
             iteration_id=f"baseline-{task_idx:04d}",
-            out_dir=self.work_dir / f"task_{task_id:03d}" / "baseline",
+            out_dir=self.work_dir / "baseline",
         )
         for k, trace in enumerate(traces):
             trace.candidate_id = "baseline"
@@ -100,7 +128,7 @@ class Gaia2Orchestrator(Orchestrator):
             ctx_task_id,
             candidate,
             iteration_id=iteration_id,
-            out_dir=self.work_dir / f"task_{ctx_task_id:03d}" / f"cand_{attempt}_{candidate_id}",
+            out_dir=self.work_dir / f"cand_{attempt}_{candidate_id}",
         )
         for k, trace in enumerate(traces):
             trace.candidate_id = candidate_id
@@ -113,10 +141,23 @@ class Gaia2Orchestrator(Orchestrator):
     def _run(self, task_id: int, candidate: Candidate, *, iteration_id: str, out_dir: Path) -> list[Trace]:
         case = self.cases[task_id]
         k = self.config.k_per_candidate
+        try:
+            check_rules_code(candidate.rules_code, forbidden_ids=self.forbidden_ids)
+            setup = setup_commands(candidate.in_env_actions, forbidden_ids=self.forbidden_ids)
+        except RulesCheckError as exc:
+            # Like envharness's RulesCodeError: the episodes fail before the env boots.
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "rules_check_error.txt").write_text(str(exc) + "\n", encoding="utf-8")
+            return [
+                missing_trace(task_idx=task_id, task_id=self.config.task_id, iteration_id=iteration_id,
+                              candidate=candidate, reason=f"RulesCheckError: {exc}")
+                for _ in range(k)
+            ]
         results = self.gaia2.run_batch(
             [case],
             harness_dir=self.harness_dir,
             env_rules_code=candidate.rules_code or None,
+            setup_commands=setup,
             k=k,
             out_dir=out_dir,
         )
@@ -150,7 +191,7 @@ class Gaia2Orchestrator(Orchestrator):
             capability=case.capability,
         )
         trace.policy_model_id = self.policy_spec.client_kwargs.get("model", "")
-        if result.disposition == "task_failure" and trace.error:
+        if result.disposition == "task_failure" and trace.error and not trace.error.startswith("rules_error"):
             # A stalled agent (no turn boundary / scenario timeout after real
             # model calls) is a task failure, not an execution error: keep it
             # in success statistics and in skill induction.

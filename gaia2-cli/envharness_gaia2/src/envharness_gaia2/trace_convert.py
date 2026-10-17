@@ -1,8 +1,8 @@
 """Convert one gaia2-runner scenario output directory into an envharness ``Trace``.
 
 Only agent-visible artifacts are read: ``result.json`` (verdict fields only),
-``trace.jsonl`` (the model's own requests/responses) and
-``env_rules_applied.jsonl``. Oracle-bearing files are never opened, and the
+``trace.jsonl`` (the model's own requests/responses) and the env-rules logs
+(``env_rules_applied.jsonl``, ``env_rules_errors.log``). Oracle-bearing files are never opened, and the
 judge's ``failure_reasons`` (which embed oracle tool counts and expected
 values) are reduced to a category.
 
@@ -21,7 +21,7 @@ from typing import Any
 
 from envharness.core.types import Action, Candidate, Observation, Step, Trace
 
-READ_FILES = ("result.json", "trace.jsonl", "env_rules_applied.jsonl")
+READ_FILES = ("result.json", "trace.jsonl", "env_rules_applied.jsonl", "env_rules_errors.log")
 FORBIDDEN_FILES = ("daemon_judgments.jsonl", "eventd.log", "trace.html")
 _MAX_OUTPUT_CHARS = 4000
 _FAILURE_CATEGORIES = (
@@ -134,16 +134,32 @@ def _exec_command(tool_call: dict[str, Any]) -> str:
     return ""
 
 
-def _app_and_subcommand(command: str) -> tuple[str, str]:
+APPS = frozenset({"calendar", "contacts", "emails", "messages", "chats", "rent-a-flat", "city", "cabs",
+                  "shopping", "cloud-drive"})
+_SEPARATORS = frozenset({"|", "||", "&&", ";", "&", "(", ")", "{", "}", "then", "do", "else"})
+
+
+def app_invocations(command: str) -> list[tuple[str, list[str]]]:
+    """``(app, argv)`` of every app CLI call in a shell command (best effort)."""
     try:
-        tokens = shlex.split(command)
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
     except ValueError:
         tokens = command.split()
-    if not tokens:
-        return "", ""
-    app = Path(tokens[0]).name
-    sub = next((t for t in tokens[1:] if not t.startswith("-")), "")
-    return app, sub
+    calls: list[tuple[str, list[str]]] = []
+    current: tuple[str, list[str]] | None = None
+    for token in tokens:
+        if token in _SEPARATORS or token.startswith((">", "<", "2>")):
+            current = None
+            continue
+        name = Path(token).name
+        if current is None and name in APPS:
+            current = (name, [])
+            calls.append(current)
+        elif current is not None:
+            current[1].append(token)
+    return calls
 
 
 def _applied(scenario_dir: Path) -> list[dict[str, Any]]:
@@ -166,17 +182,25 @@ def convert(
     candidate: Candidate,
     capability: str,
 ) -> Trace:
-    """Build a Trace whose Steps are the agent's ``exec`` calls."""
+    """Build a Trace whose Steps are the agent's ``exec`` calls plus its final reply.
+
+    Env-rules interventions are attached to the step whose command ran the
+    same app with the same argv (first unconsumed match); a blocked call sets
+    ``blocked_reason`` as in envharness ``Rules``. Errors raised by rules code
+    (fail-open in the container) make the rollout an error trace, as a hook
+    exception does in the original runner.
+    """
     scenario_dir = Path(scenario_dir)
     result = json.loads(_read_text(scenario_dir, "result.json") or "{}")
     messages = conversation(scenario_dir)
-    blocked_queue = [e for e in _applied(scenario_dir) if e.get("kind") == "blocked"]
+    pending = [e for e in _applied(scenario_dir) if isinstance(e, dict)]
     outputs: dict[str, str] = {
         str(m.get("tool_call_id")): _text(m.get("content"))
         for m in messages
         if m.get("role") == "tool" and m.get("tool_call_id")
     }
     task_text = user_request(next((_text(m.get("content")) for m in messages if m.get("role") == "user"), ""))
+    base_info = {"scenario_id": scenario_dir.name, "capability": capability}
 
     steps: list[Step] = []
     for message in messages:
@@ -189,42 +213,50 @@ def convert(
             command = _exec_command(tool_call)
             output = outputs.get(str(tool_call.get("id")), "")[:_MAX_OUTPUT_CHARS]
             action = Action(name="exec", kwargs={"command": command, "text": command})
-            app, sub = _app_and_subcommand(command)
-            blocked_reason = None
-            if blocked_queue and (blocked_queue[0].get("app"), blocked_queue[0].get("subcommand")) == (app, sub):
-                blocked_reason = str(blocked_queue.pop(0).get("reason") or "blocked")
-            observation = Observation(text=output)
+            interventions = []
+            for app, argv in app_invocations(command):
+                match = next((e for e in pending if e.get("app") == app and e.get("argv") == argv), None)
+                if match is not None:
+                    pending.remove(match)
+                    interventions.append(match)
+            blocked = next((e for e in interventions if e.get("kind") == "blocked"), None)
+            blocked_reason = str(blocked.get("reason") or "blocked") if blocked else None
+            info = dict(base_info)
+            if interventions:
+                info["interventions"] = [
+                    {k: v for k, v in e.items() if k in ("app", "subcommand", "kind", "wrote", "exit_code", "new_argv")}
+                    for e in interventions
+                ]
             steps.append(
                 Step(
                     raw_action=action,
                     filtered_action=None if blocked_reason else action,
                     blocked_reason=blocked_reason,
-                    raw_observation=observation,
+                    raw_observation=Observation(text=output),
                     filtered_observation=Observation(text=output),
                     policy_raw_response=reasoning[:_MAX_OUTPUT_CHARS] or None,
-                    info={"scenario_id": scenario_dir.name, "capability": capability},
+                    info=info,
                 )
             )
-    if steps:
-        first = steps[0].filtered_observation
-        steps[0].filtered_observation = Observation(text=f"Task: {task_text}\n\n{first.text if first else ''}")
-    else:
-        steps.append(
-            Step(
-                raw_action=Action(name="reply", kwargs={"text": ""}),
-                filtered_action=Action(name="reply", kwargs={"text": ""}),
-                raw_observation=Observation(text=f"Task: {task_text}"),
-                filtered_observation=Observation(text=f"Task: {task_text}"),
-                info={"scenario_id": scenario_dir.name, "capability": capability},
-            )
-        )
     final_reply = str(result.get("agent_response") or "")
-    if final_reply:
-        steps[-1].info["final_reply"] = final_reply[:_MAX_OUTPUT_CHARS]
+    if final_reply or not steps:
+        # The student's final answer is its last action (cf. OfficeQA's answer()).
+        reply = Action(name="reply", kwargs={"text": final_reply[:_MAX_OUTPUT_CHARS]})
+        steps.append(Step(raw_action=reply, filtered_action=reply, raw_observation=Observation(text=""),
+                          filtered_observation=Observation(text=""), info=dict(base_info)))
+    first = steps[0].filtered_observation
+    steps[0].filtered_observation = Observation(text=f"Task: {task_text}\n\n{first.text if first else ''}".rstrip())
+    steps[0].info["task"] = task_text
+    if pending:
+        steps[0].info["unattributed_interventions"] = len(pending)
 
     success = result.get("success") is True
     category = failure_category(result)
     steps[0].info["failure_category"] = category
+    error = None if result.get("success") is not None else (category or "no_judgment")
+    rules_errors = (_read_text(scenario_dir, "env_rules_errors.log") or "").strip()
+    if rules_errors:
+        error = f"rules_error: {rules_errors.splitlines()[0][:200]}"
     return Trace(
         episode_id=uuid.uuid4().hex,
         iteration_id=iteration_id,
@@ -235,7 +267,7 @@ def convert(
         final_reward=1.0 if success else 0.0,
         success=success,
         duration_steps=len(steps),
-        error=None if result.get("success") is not None else (category or "no_judgment"),
+        error=error,
     )
 
 

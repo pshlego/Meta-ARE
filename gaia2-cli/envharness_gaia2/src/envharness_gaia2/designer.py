@@ -1,23 +1,18 @@
-"""EnvHarness designer for GAIA2/OpenClaw: LLM client + LLMHarnessAgent subclass."""
+"""EnvHarness designer for GAIA2/OpenClaw: optimizer LLM client + the original LLMHarnessAgent."""
 
 from __future__ import annotations
 
 import json
+import os
 import sys
+import threading
 import time
 from typing import Any, Iterable
 
-from envharness.agents.harness_agent import (
-    PROPOSE_TOOL,
-    HarnessAgentContext,
-    LLMHarnessAgent,
-    _candidate_from_args,
-)
-from envharness.core.types import Candidate, Trace
-from envharness.infra.llm import ChatResponse, LLMClient, Message, ToolCall, _message_to_dict
+from envharness.agents.harness_agent import LLMHarnessAgent
+from envharness.infra.llm import ChatResponse, LLMClient, LoggingLLMClient, ToolCall
 
 from envharness_gaia2 import PROMPTS_DIR
-from envharness_gaia2.rules_check import RulesCheckError, check_rules_code
 
 
 class ResponsesClient(LLMClient):
@@ -141,102 +136,81 @@ def _responses_tool_choice(choice: Any) -> Any:
     return choice
 
 
-def make_client(optimizer, *, log_path, role: str) -> LLMClient:
+def make_client(optimizer, *, log_path, role: str, reasoning_effort: str | None = None) -> LLMClient:
     """Optimizer LLM client with every call JSONL-logged (envharness LoggingLLMClient)."""
-    from envharness.infra.llm import LoggingLLMClient
-
+    effort = reasoning_effort or optimizer.reasoning_effort
     if optimizer.wire_api == "responses":
         factory = "envharness_gaia2.designer:ResponsesClient"
-        kwargs = {"model": optimizer.model, "api_base": optimizer.api_base, "reasoning_effort": optimizer.reasoning_effort,
+        kwargs = {"model": optimizer.model, "api_base": optimizer.api_base, "reasoning_effort": effort,
                   "usage_log": str(log_path.with_name("optimizer_usage.jsonl"))}
     else:
         factory = "envharness.infra.llm:LiteLLMClient"
         kwargs = {"model": f"openai/{optimizer.model}", "api_base": optimizer.api_base, "api_key": "dummy"}
-        if optimizer.reasoning_effort:
-            kwargs["reasoning_effort"] = optimizer.reasoning_effort
-    return LoggingLLMClient(
+        if effort:
+            kwargs["reasoning_effort"] = effort
+    return ThreadSafeLoggingLLMClient(
         inner_factory=factory, inner_kwargs=kwargs, log_path=str(log_path), role=role,
         truncate_messages_to_chars=None,
     )
 
 
-class RulesRejected(RuntimeError):
-    """The designer could not produce valid rules within the fix-up budget."""
+class ThreadSafeLoggingLLMClient(LoggingLLMClient):
+    """LoggingLLMClient (same JSONL record) whose appends are serialized across threads.
+
+    Bank induction runs pairs in a thread pool; the upstream client appends
+    each (often >PIPE_BUF) record without a lock, so records could interleave.
+    """
+
+    _lock = threading.Lock()
+
+    def chat(self, messages, tools=None, tool_choice="auto", temperature=0.7, max_tokens=None, **kwargs):
+        started = time.time()
+        error, exc = None, None
+        try:
+            resp = self.inner.chat(messages, tools=tools, tool_choice=tool_choice, temperature=temperature,
+                                   max_tokens=max_tokens, **kwargs)
+        except Exception as e:  # noqa: BLE001 - logged, then re-raised
+            exc, error = e, f"{type(e).__name__}: {e}"
+            resp = ChatResponse(content="", tool_calls=[])
+        record = {
+            "ts": time.time(),
+            "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "pid": os.getpid(),
+            "role": self.role,
+            "model": self.model_id,
+            "duration_ms": int((time.time() - started) * 1000),
+            "messages": [self._serialize_message(m) for m in messages],
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "response": {
+                "content": resp.content,
+                "tool_calls": [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in resp.tool_calls],
+            },
+            "error": error,
+        }
+        line = json.dumps(record, default=str, ensure_ascii=False) + "\n"
+        with self._lock, open(self.log_path, "a", encoding="utf-8") as handle:
+            handle.write(line)
+        if exc is not None:
+            raise exc
+        return resp
 
 
 class Gaia2HarnessAgent(LLMHarnessAgent):
-    """LLMHarnessAgent with a GAIA2 system prompt, band skip and validated rules."""
+    """The original LLMHarnessAgent (``_DEFAULT_SYSTEM`` + the benchmark's
+    ``extra_instructions``, as every envharness corpus config does), with one
+    rendering fix: the upstream step renderer drops the command of pydantic
+    ``Action`` steps (``harness_agent.py:858``). SWE-bench still shows commands
+    because its observations start with ``$ <cmd>``; GAIA2 observations do not,
+    so commands are rendered explicitly to give the designer the same view.
+    """
 
-    def __init__(
-        self,
-        client: LLMClient,
-        *,
-        k: int,
-        band: tuple[float, float],
-        forbidden_ids: Iterable[str] = (),
-        max_fix_attempts: int = 2,
-    ) -> None:
+    def __init__(self, client: LLMClient, *, k: int, band: tuple[float, float]) -> None:
         lo, hi = band
-        extra = (PROMPTS_DIR / "designer_extra.md").read_text(encoding="utf-8").format(k=k, lo=lo, hi=hi)
-        super().__init__(
-            client,
-            system_prompt=(PROMPTS_DIR / "designer_system.md").read_text(encoding="utf-8"),
-            extra_instructions=extra,
-        )
-        self.band = band
-        self.forbidden_ids = tuple(forbidden_ids)
-        self.max_fix_attempts = max_fix_attempts
-
-    def propose(self, ctx: HarnessAgentContext) -> Candidate:
-        lo, hi = self.band
-        if ctx.baseline is not None and lo <= ctx.baseline.sr <= hi:
-            return Candidate(rationale=f"skip-in-band (baseline sr={ctx.baseline.sr:.2f})")
-        return self._validated(super().propose(ctx), ctx, intro="Propose a Candidate now.")
-
-    def refine(self, candidate: Candidate, traces: list[Trace], ctx: HarnessAgentContext) -> Candidate:
-        refined = self._validated(
-            super().refine(candidate, traces, ctx), ctx, intro="Refine the previous candidate based on the K rollouts."
-        )
-        if not refined.rules_code.strip():
-            # An empty refinement would only replay the baseline; end the task.
-            raise RulesRejected(f"refinement produced no rules ({refined.rationale[:120]})")
-        return refined
-
-    def _validated(self, candidate: Candidate, ctx: HarnessAgentContext, *, intro: str) -> Candidate:
-        for attempt in range(self.max_fix_attempts + 1):
-            problem = self._problem(candidate)
-            if problem is None:
-                return candidate
-            if attempt == self.max_fix_attempts:
-                break
-            messages = self._base_messages(ctx, intro=intro)
-            messages.append(
-                Message(
-                    role="user",
-                    content=(
-                        "Your previous candidate was rejected by the static checker before any rollout:\n"
-                        f"{problem}\n\nPrevious rules_code:\n```python\n{candidate.rules_code}\n```\n"
-                        "Fix it (or skip with an empty rules_code). Same propose_candidate schema."
-                    ),
-                )
-            )
-            response = self.client.chat(
-                messages, tools=[PROPOSE_TOOL],
-                tool_choice={"type": "function", "function": {"name": "propose_candidate"}},
-            )
-            if not response.tool_calls:
-                break
-            candidate = _candidate_from_args(response.tool_calls[0].arguments)
-        return Candidate(rationale=f"skip-invalid-rules: {self._problem(candidate)}")
-
-    def _problem(self, candidate: Candidate) -> str | None:
-        if candidate.in_env_actions:
-            return "in_env_actions (Setup) are disabled in this experiment; leave them empty."
-        try:
-            check_rules_code(candidate.rules_code, forbidden_ids=self.forbidden_ids)
-        except RulesCheckError as exc:
-            return str(exc)
-        return None
+        extra = (PROMPTS_DIR / "designer_extra.md").read_text(encoding="utf-8")
+        for key, value in {"k": k, "lo": lo, "hi": hi}.items():
+            extra = extra.replace("{" + key + "}", str(value))
+        super().__init__(client, extra_instructions=extra)
 
     @staticmethod
     def _render_steps_for_mutator(

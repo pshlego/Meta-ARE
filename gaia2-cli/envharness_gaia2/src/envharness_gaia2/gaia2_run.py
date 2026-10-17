@@ -27,6 +27,16 @@ def sha256_file(path: Path) -> str:
     return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def bundle_digest(directory: Path) -> str:
+    """Mirror of ``gaia2_cli.env_setup.bundle_digest`` (rules.py and/or setup.json)."""
+    digest = hashlib.sha256()
+    for name in ("rules.py", "setup.json"):
+        path = Path(directory) / name
+        if path.is_file():
+            digest.update(f"{name}:{hashlib.sha256(path.read_bytes()).hexdigest()}\n".encode())
+    return "sha256:" + digest.hexdigest()
+
+
 def wrap_docker_group(argv: list[str], docker_group: str | None) -> list[str]:
     """Run ``argv`` with the docker group (``sg``) when the login session lacks it."""
     if docker_group is None:
@@ -103,17 +113,19 @@ class Gaia2Runner:
         env_rules_code: str | None,
         k: int,
         out_dir: Path,
+        setup_commands: Sequence[str] = (),
     ) -> list[ScenarioResult]:
-        """Run every case ``k`` times; retry infrastructure failures once (configurable)."""
+        """Run every case ``k`` times; retry infrastructure failures (``infrastructure_retries``)."""
         out_dir = Path(out_dir).resolve()
-        results = self._run_attempt(cases, harness_dir, env_rules_code, k, out_dir / "attempt-1")
+        bundle = (env_rules_code, tuple(setup_commands))
+        results = self._run_attempt(cases, harness_dir, bundle, k, out_dir / "attempt-1")
         for retry in range(self.settings.infrastructure_retries):
             failed_ids = sorted({r.scenario_id for r in results if r.disposition in ("execution_error", "missing")})
             if not failed_ids:
                 break
             retry_cases = [case for case in cases if case.scenario_id in failed_ids]
             retried = self._run_attempt(
-                retry_cases, harness_dir, env_rules_code, k, out_dir / f"attempt-{retry + 2}"
+                retry_cases, harness_dir, bundle, k, out_dir / f"attempt-{retry + 2}"
             )
             by_key = {(r.scenario_id, r.repetition): r for r in retried}
             results = [by_key.get((r.scenario_id, r.repetition), r) if r.scenario_id in failed_ids else r for r in results]
@@ -124,10 +136,11 @@ class Gaia2Runner:
         self,
         cases: Sequence[CaseRef],
         harness_dir: Path,
-        env_rules_code: str | None,
+        bundle: tuple[str | None, tuple[str, ...]],
         k: int,
         attempt_dir: Path,
     ) -> list[ScenarioResult]:
+        env_rules_code, setup = bundle
         attempt_dir.mkdir(parents=True, exist_ok=True)
         dataset_dir = attempt_dir / "dataset"
         output_dir = attempt_dir / "output"
@@ -136,11 +149,18 @@ class Gaia2Runner:
         harness_digest = self.harness_digest_fn(harness_dir)
         rules_dir = None
         rules_digest = None
-        if env_rules_code is not None and env_rules_code.strip():
+        has_rules = env_rules_code is not None and bool(env_rules_code.strip())
+        if has_rules or setup:
             rules_dir = attempt_dir / "env_rules"
-            rules_dir.mkdir(exist_ok=True)
-            (rules_dir / "rules.py").write_text(env_rules_code, encoding="utf-8")
-            rules_digest = sha256_file(rules_dir / "rules.py")
+            if rules_dir.exists():
+                shutil.rmtree(rules_dir)
+            rules_dir.mkdir()
+            if has_rules:
+                (rules_dir / "rules.py").write_text(env_rules_code, encoding="utf-8")
+            if setup:
+                (rules_dir / "setup.json").write_text(json.dumps({"commands": list(setup)}, indent=2) + "\n",
+                                                      encoding="utf-8")
+            rules_digest = bundle_digest(rules_dir)
             _make_world_readable(rules_dir)
         self._stage_cases(cases, dataset_dir)
         config_path = attempt_dir / "run.toml"

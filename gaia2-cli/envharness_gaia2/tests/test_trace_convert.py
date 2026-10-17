@@ -31,6 +31,8 @@ def test_convert_real_fixture_without_opening_oracle_files(monkeypatch):
     assert not [p for p in opened if Path(p).name in FORBIDDEN_FILES]
     assert trace.success is True and trace.rollout_seed == 4
     assert trace.duration_steps == len(trace.steps) > 5
+    assert trace.steps[-1].raw_action.name == "reply" and trace.steps[-1].raw_action.kwargs["text"]
+    assert trace.steps[0].info["task"].startswith("Find the person with whom I have the most conversations")
     first = trace.steps[0]
     assert first.raw_action.name == "exec" and first.raw_action.kwargs["command"].startswith("chats --help")
     assert first.filtered_observation.text.startswith("Task: Find the person with whom I have the most conversations")
@@ -62,3 +64,24 @@ def test_disposition_requires_matching_digests():
     stalled = {"success": None, "harness_digest": "h", "error": "No judgment (no turn boundary detected)"}
     assert disposition_of(stalled, [200], {"digest": "h"}, "h", None)[0] == "task_failure"
     assert disposition_of(stalled, [], {"digest": "h"}, "h", None)[0] == "execution_error"
+
+
+def test_interventions_attach_by_exact_argv_and_rules_errors_mark_the_trace(tmp_path):
+    commands = ("contacts get-contacts --help && contacts get-contacts --offset 0",
+                "cd /tmp; contacts get-contacts --offset 10 | head", "calendar get-events")
+    path = write_scenario_output(tmp_path / "scenario_universe_29_x", success=True, commands=commands)
+    applied = [
+        {"app": "contacts", "subcommand": "get-contacts", "kind": "blocked", "argv": ["get-contacts", "--offset", "10"],
+         "reason": "busy"},
+        {"app": "contacts", "subcommand": "get-contacts", "kind": "observation_modified", "argv": ["get-contacts", "--offset", "0"],
+         "wrote": False},
+        {"app": "cabs", "subcommand": "order-ride", "kind": "blocked", "argv": ["order-ride"], "reason": "x"},
+    ]
+    (path / "env_rules_applied.jsonl").write_text("".join(json.dumps(e) + "\n" for e in applied))
+    trace = _convert(path)
+    assert [s.blocked_reason for s in trace.steps[:3]] == [None, "busy", None]
+    assert trace.steps[0].info["interventions"][0]["kind"] == "observation_modified"
+    assert trace.steps[0].info["unattributed_interventions"] == 1
+    assert trace.error is None
+    (path / "env_rules_errors.log").write_text("[ts] contacts filter_observation raised; showing the unfiltered output\n")
+    assert _convert(path).error.startswith("rules_error: [ts] contacts filter_observation raised")

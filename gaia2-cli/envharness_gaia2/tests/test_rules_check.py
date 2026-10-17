@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from envharness_gaia2.rules_check import RulesCheckError, check_rules_code
+from envharness.core.types import Action
+
+from envharness_gaia2.rules_check import RulesCheckError, check_rules_code, setup_commands
 
 
 GOOD = """
@@ -31,7 +33,7 @@ class _Rules(Rules):
     [
         (GOOD.replace("import json", "import os"), "may import only"),
         (GOOD + "\n        open('x')\n", None),
-        ("class _Rules(Rules):\n    def modify_transition(self, a, r, s):\n        return r\n", "modify_transition"),
+        ("class _Rules(Rules):\n    def step(self, a):\n        return a\n", "remove ['step']"),
         ("class Other(Rules):\n    pass\n", "_Rules"),
         ("class _Rules(Rules):\n    def filter_action(self, a, s):\n        return a.__class__\n", "dunder"),
         (GOOD.replace("contacts", "scenario_universe_29_abc"), "scenario identifiers"),
@@ -63,3 +65,39 @@ def test_rules_check_accepts_contract_and_matches_container_loader():
     assert isinstance(blocked, module.Blocked)
     shown = rules.filter_observation(module.Observation(json.dumps(list(range(10)))), {"app": "emails"})
     assert json.loads(shown.text) == [0, 1, 2]
+
+
+def test_transition_hook_is_allowed_and_runs_in_the_container_loader():
+    code = (
+        "class _Rules(Rules):\n"
+        "    def modify_transition(self, action, response, env_state):\n"
+        "        if response.info['wrote']:\n"
+        "            return response\n"
+        "        return EnvResponse(observation=Observation(text=''), info=dict(response.info, exit_code=1))\n"
+    )
+    check_rules_code(code)
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "env_rules_t", Path(__file__).resolve().parents[2] / "cli" / "gaia2_cli" / "env_rules.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["env_rules_t"] = module
+    spec.loader.exec_module(module)
+    rules = module.load_rules_class(code)()
+    response = module.EnvResponse(observation=module.Observation("[]"), info={"exit_code": 0, "stderr": "", "wrote": False})
+    assert rules.modify_transition(module.Action("contacts.get-contacts"), response, {}).info["exit_code"] == 1
+
+
+def test_setup_commands_are_single_app_calls():
+    ok = [Action(name="exec", kwargs={"command": "contacts add-new-contact --first-name 'A;B' --last-name C"})]
+    assert setup_commands(ok) == ["contacts add-new-contact --first-name 'A;B' --last-name C"]
+    for bad in ("ls /var/gaia2", "contacts get-contacts; cat /etc/passwd", "contacts get-contacts | sh",
+                "calendar get-all-tags && rm x", "contacts get-contacts > /tmp/x"):
+        with pytest.raises(RulesCheckError):
+            setup_commands([Action(name="exec", kwargs={"command": bad})])
+    with pytest.raises(RulesCheckError, match="exec"):
+        setup_commands([Action(name="contacts", kwargs={"command": "contacts get-contacts"})])
+    with pytest.raises(RulesCheckError, match="scenario"):
+        setup_commands(ok, forbidden_ids=["Bxx", "A;B"])

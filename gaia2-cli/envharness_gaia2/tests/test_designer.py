@@ -3,16 +3,16 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-import pytest
 from envharness.agents.harness_agent import HarnessAgentContext
-from envharness.core.types import Action, BaselineSnapshot, Candidate, Observation, Step
+from envharness.core.types import Action, BaselineSnapshot, Observation, Step
 from envharness.infra.llm import ChatResponse, Message, ScriptedClient, ToolCall
 
-from envharness_gaia2.designer import Gaia2HarnessAgent, ResponsesClient, RulesRejected
+from envharness.agents.harness_agent import LLMHarnessAgent
+
+from envharness_gaia2.designer import Gaia2HarnessAgent, ResponsesClient
 from envharness_gaia2.orchestrator import ENV_STATE_SCHEMA, EXEC_TOOL_SCHEMA
 
 GOOD = "class _Rules(Rules):\n    def filter_action(self, action, env_state):\n        return action\n"
-BAD = "import os\nclass _Rules(Rules):\n    def filter_action(self, action, env_state):\n        return action\n"
 
 
 def _ctx(sr: float) -> HarnessAgentContext:
@@ -50,38 +50,32 @@ def test_responses_client_translates_messages_and_tools(monkeypatch):
     assert response.tool_calls[0].arguments["rules_code"] == GOOD
 
 
-def _propose(code: str) -> ChatResponse:
-    return ChatResponse(content="", tool_calls=[ToolCall(id="t", name="propose_candidate",
-                                                         arguments={"rationale": "why", "rules_code": code})])
+def test_agent_is_the_original_with_the_gaia2_block():
+    from envharness.agents.harness_agent import _DEFAULT_SYSTEM
+
+    agent = Gaia2HarnessAgent(ScriptedClient(responder=lambda m, t: None), k=5, band=(0.4, 0.6))
+    assert agent.system_prompt.startswith(_DEFAULT_SYSTEM)
+    extra = agent.system_prompt.split("--- experiment-specific instructions ---", 1)[1]
+    assert "PHASE 1" in extra and "PHASE 4" in extra and "GRADING INTEGRITY" in extra
+    assert "[0.4, 0.6]" in extra and "K=5" in extra and "{" + "lo}" not in extra
+    assert type(agent).propose is LLMHarnessAgent.propose and type(agent).refine is LLMHarnessAgent.refine
+    assert type(agent).decide is LLMHarnessAgent.decide
 
 
-def test_band_skip_and_rules_fixup():
-    calls = []
+def test_logging_client_appends_whole_records_from_threads(tmp_path):
+    import concurrent.futures as cf
 
-    def responder(messages, tools):
-        calls.append(messages)
-        return _propose(BAD if len(calls) == 1 else GOOD)
+    from envharness_gaia2.designer import ThreadSafeLoggingLLMClient
 
-    agent = Gaia2HarnessAgent(ScriptedClient(responder=responder), k=3, band=(0.3, 0.7))
-    assert agent.propose(_ctx(0.67)).rationale.startswith("skip-in-band")
-    assert calls == []
-    candidate = agent.propose(_ctx(0.0))
-    assert candidate.rules_code == GOOD and len(calls) == 2
-    assert "rejected by the static checker" in calls[1][-1].content
-    assert "GAIA2" in calls[0][0].content and "experiment-specific" in calls[0][0].content
-
-
-def test_invalid_rules_after_budget_become_skip_and_refine_raises():
-    agent = Gaia2HarnessAgent(ScriptedClient(responder=lambda m, t: _propose(BAD)), k=3, band=(0.3, 0.7))
-    candidate = agent.propose(_ctx(1.0))
-    assert candidate.rules_code == "" and candidate.rationale.startswith("skip-invalid-rules")
-    with pytest.raises(RulesRejected):
-        agent.refine(Candidate(rules_code=GOOD), [], _ctx(1.0))
-
-
-def test_in_env_actions_are_rejected():
-    agent = Gaia2HarnessAgent(ScriptedClient(responder=lambda m, t: _propose(GOOD)), k=3, band=(0.3, 0.7))
-    assert agent._problem(Candidate(rules_code=GOOD, in_env_actions=[Action(name="x")])) is not None
+    client = ThreadSafeLoggingLLMClient(
+        inner_factory="envharness.infra.llm:ScriptedClient",
+        inner_kwargs={"script": [{"name": "noop", "kwargs": {"blob": "x" * 50_000}} for _ in range(16)]},
+        log_path=str(tmp_path / "calls.jsonl"), role="induce", truncate_messages_to_chars=None,
+    )
+    with cf.ThreadPoolExecutor(8) as pool:
+        list(pool.map(lambda i: client.chat([Message(role="user", content="y" * 20_000)]), range(16)))
+    lines = (tmp_path / "calls.jsonl").read_text().splitlines()
+    assert len(lines) == 16 and all(json.loads(line)["role"] == "induce" for line in lines)
 
 
 def test_step_renderer_shows_commands():
@@ -91,3 +85,8 @@ def test_step_renderer_shows_commands():
     text = Gaia2HarnessAgent._render_steps_for_mutator([step])
     assert "<cmd>contacts get-contacts --offset 0</cmd>" in text
     assert "BLOCKED: Error: temporarily unavailable" in text and "look up contacts" in text
+
+
+def test_reply_step_renders_the_answer():
+    step = Step(raw_action=Action(name="reply", kwargs={"text": "Booked the cab."}), filtered_observation=Observation(text=""))
+    assert "<cmd>Booked the cab.</cmd>" in Gaia2HarnessAgent._render_steps_for_mutator([step])
