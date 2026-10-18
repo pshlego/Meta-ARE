@@ -139,6 +139,9 @@ RUN chown -R gaia2:gaia2 /var/gaia2 && \
     chmod 700 /var/gaia2
 # Only gaia2-init (root) reads the Files backing store; the agent uses the Files CLI.
 RUN chmod 700 /opt/gaia2_filesystem
+# The runner mounts the EnvHarness rules bundle under this root-only directory;
+# gaia2-init (root) copies it into /var/gaia2/env_rules, the agent never sees it.
+RUN install -d -m 700 -o root -g root /opt/gaia2_private
 
 # ── Non-root agent user ───────────────────────────────────────────────
 RUN useradd -m -s /bin/bash -u 1000 agent

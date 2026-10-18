@@ -68,6 +68,8 @@ SPLIT_DISPLAY_ORDER_INDEX = {
 }
 DATASET_PARTITION_DIR_NAMES = frozenset({"train", "validation", "test"})
 PORT_ALLOCATION_ATTEMPTS = 1000
+# EnvHarness rules bundle mount point, inside the image's root-only /opt/gaia2_private.
+ENV_RULES_MOUNT = "/opt/gaia2_private/env_rules_src"
 
 
 def _default_env_file() -> Path:
@@ -1635,8 +1637,9 @@ def _build_execution_config(
         if not ((bundle / "rules.py").is_file() or (bundle / "setup.json").is_file()):
             raise click.UsageError(f"env rules dir has neither rules.py nor setup.json: {bundle}")
         rules_digest = env_bundle_digest(bundle)
-        volumes = (*volumes, f"{bundle}:/opt/gaia2_env_rules_src:ro")
-        container_env["GAIA2_ENV_RULES_DIR"] = "/opt/gaia2_env_rules_src"
+        # Under the image's root-only /opt/gaia2_private: the agent must not read the rules.
+        volumes = (*volumes, f"{bundle}:{ENV_RULES_MOUNT}:ro")
+        container_env["GAIA2_ENV_RULES_DIR"] = ENV_RULES_MOUNT
         container_env["GAIA2_ENV_RULES_DIGEST"] = rules_digest
         result_metadata["env_rules_digest"] = rules_digest
 

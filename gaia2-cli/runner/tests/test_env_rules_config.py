@@ -45,8 +45,8 @@ def test_env_rules_dir_is_mounted_and_pinned(tmp_path: Path) -> None:
     inner = hashlib.sha256((rules / "rules.py").read_bytes()).hexdigest()
     digest = "sha256:" + hashlib.sha256(f"rules.py:{inner}\n".encode()).hexdigest()
     config = _build(env_rules_dir=str(rules))
-    assert f"{rules.resolve()}:/opt/gaia2_env_rules_src:ro" in config.extra_volumes
-    assert config.container_env["GAIA2_ENV_RULES_DIR"] == "/opt/gaia2_env_rules_src"
+    assert f"{rules.resolve()}:/opt/gaia2_private/env_rules_src:ro" in config.extra_volumes
+    assert config.container_env["GAIA2_ENV_RULES_DIR"] == "/opt/gaia2_private/env_rules_src"
     assert config.container_env["GAIA2_ENV_RULES_DIGEST"] == digest
     assert config.result_metadata["env_rules_digest"] == digest
 

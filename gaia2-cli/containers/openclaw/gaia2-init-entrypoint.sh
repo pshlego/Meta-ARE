@@ -170,6 +170,11 @@ install_env_rules() {
     chown -R gaia2:gaia2 "$dst"
     chmod 700 "$dst"
     chmod 600 "$dst"/*
+    # The mounted source must be as hidden from the agent as the copy.
+    if su -s /bin/sh agent -c "test -e '$src'" 2>/dev/null; then
+        echo "[gaia2-init] ERROR: env rules source $src is visible to the agent" >&2
+        exit 1
+    fi
     echo "[gaia2-init] Installed env rules bundle ($actual)" >&2
 }
 
@@ -442,6 +447,8 @@ exec_agent_entrypoint() {
     # auth-profiles.json with the runtime API key; the build-time setup run
     # cannot bake real credentials into the image.
     write_agent_env_file
+    # su keeps the caller's environment: do not tell the agent about env rules.
+    unset GAIA2_ENV_RULES_DIR GAIA2_ENV_RULES_DIGEST
     exec su -s /usr/bin/bash agent -c "source '$AGENT_ENV_FILE' && exec /usr/bin/bash /opt/entrypoint.sh"
 }
 
