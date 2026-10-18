@@ -120,3 +120,12 @@ def test_dunder_names_are_rejected_but_public_getattr_is_allowed():
     with pytest.raises(RulesCheckError, match="dunder name"):
         check_rules_code("class _Rules(Rules):\n    def filter_action(self, a, s):\n        return __builtins__['open']\n")
     check_rules_code("class _Rules(Rules):\n    def filter_action(self, a, s):\n        return getattr(s, 'app', a)\n")
+
+
+def test_schema_states_every_limit_the_check_enforces():
+    from envharness_gaia2.orchestrator import ENV_STATE_SCHEMA
+    from envharness_gaia2.rules_check import ALLOWED_IMPORTS, MAX_BYTES, MAX_SETUP_ACTIONS
+
+    assert f"over {MAX_BYTES} bytes" in ENV_STATE_SCHEMA
+    assert f"at most {MAX_SETUP_ACTIONS}" in ENV_STATE_SCHEMA
+    assert all(name in ENV_STATE_SCHEMA for name in ALLOWED_IMPORTS)

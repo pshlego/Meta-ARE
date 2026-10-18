@@ -152,13 +152,15 @@ class Report:
             for task_dir in sorted((round_dir / "corpus").glob("task_*")):
                 traces = _jsonl(task_dir / "traces.jsonl")
                 n_base = sum(1 for t in traces if t.get("kind") == "baseline")
+                base_sr = next((e.get("sr") for e in _jsonl(task_dir / "orchestrator.jsonl")
+                                if e.get("kind") == "baseline_compute_done"), None)
                 events = [e for e in _jsonl(task_dir / "orchestrator.jsonl")
                           if e.get("kind") in ("task_skipped_passthrough", "mutator_decision", "task_aborted")]
                 decisions += len(events)
                 summary = ", ".join(f"{e['kind'].replace('mutator_', '')}:{e.get('decision') or (e.get('rationale') or '')[:40]}"
                                     for e in events) or "-"
                 kinds = sorted({t.get("kind") for t in traces if t.get("kind") != "baseline"})
-                lines.append(f"- {round_dir.name}/{task_dir.name}: baseline={n_base}/{k} decisions=[{summary}] other_kinds={kinds}")
+                lines.append(f"- {round_dir.name}/{task_dir.name}: baseline rollouts={n_base}/{k} SR={base_sr} decisions=[{summary}] other_kinds={kinds}")
                 ok &= n_base == k and (task_dir / "DONE").is_file()
         variant_results = [p for p in _results(self.run / "rounds") if "/cand_" in str(p)]
         with_digest = sum(1 for p in variant_results if _json(p).get("env_rules_digest"))

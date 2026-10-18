@@ -83,7 +83,8 @@ Only Rules, Action, Blocked, Observation, EnvResponse are pre-bound. Every modul
 use must be imported at the top of rules_code (e.g. `import json` before json.loads),
 and only re, json, random, hashlib, itertools and textwrap may be imported; no file,
 OS or network access. A static check rejects (and the rollouts then fail with
-RulesCheckError): a name that is used but never imported or defined, open, eval,
+RulesCheckError): rules_code over 8192 bytes (UTF-8), a name that is used but never
+imported or defined, open, eval,
 exec, compile, globals, locals, vars, setattr, delattr, input, any name or attribute
 starting with "__", and references to os/sys/subprocess/socket/shutil/pathlib/io.
 getattr/hasattr work for public names only. env_state, obs.data and response.info
