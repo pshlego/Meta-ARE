@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any, Iterable
 
 from envharness.agents.harness_agent import LLMHarnessAgent
@@ -202,7 +203,8 @@ class Gaia2HarnessAgent(LLMHarnessAgent):
     rendering fix: the upstream step renderer drops the command of pydantic
     ``Action`` steps (``harness_agent.py:858``). SWE-bench still shows commands
     because its observations start with ``$ <cmd>``; GAIA2 observations do not,
-    so commands are rendered explicitly to give the designer the same view.
+    so the command is handed to the upstream renderer in the dict form it reads.
+    Everything else (format, limits, truncation) is the upstream renderer's.
     """
 
     def __init__(self, client: LLMClient, *, k: int, band: tuple[float, float]) -> None:
@@ -213,32 +215,23 @@ class Gaia2HarnessAgent(LLMHarnessAgent):
         super().__init__(client, extra_instructions=extra)
 
     @staticmethod
-    def _render_steps_for_mutator(
-        steps: list,
-        max_steps: int = 12,
-        max_think_chars: int = 600,
-        max_obs_chars: int = 600,
-        max_cmd_chars: int = 300,
-    ) -> str:
-        """Fixes the upstream renderer, which drops pydantic ``Action`` commands."""
-        shown = steps[-max_steps:]
-        start = len(steps) - len(shown)
-        out = []
-        if start:
-            out.append(f"    [showing last {len(shown)} of {len(steps)} steps; first {start} omitted]")
-        for offset, step in enumerate(shown, start=start + 1):
+    def _render_steps_for_mutator(steps: list, **kwargs) -> str:
+        """Upstream renderer over steps whose command it can read.
+
+        The student's final reply is its last action, shown like a command.
+        Its plain-text reasoning is wrapped in the ``<think>`` tags upstream extracts.
+        """
+        shown = []
+        for step in steps:
             action = getattr(step, "raw_action", None)
-            kwargs = (action.get("kwargs") if isinstance(action, dict) else getattr(action, "kwargs", None)) or {}
-            command = str(kwargs.get("command") or kwargs.get("text") or "")[:max_cmd_chars]
-            observation = getattr(step, "filtered_observation", None) or getattr(step, "raw_observation", None)
-            text = (observation.get("text", "") if isinstance(observation, dict) else getattr(observation, "text", "")) or ""
+            action_kwargs = (action.get("kwargs") if isinstance(action, dict) else getattr(action, "kwargs", None)) or {}
+            command = str(action_kwargs.get("command") or action_kwargs.get("text") or "")
             reasoning = (getattr(step, "policy_raw_response", None) or "").strip()
-            block = [f"    Step {offset}:"]
-            if reasoning:
-                block.append(f"      <reasoning>{reasoning[:max_think_chars]}</reasoning>")
-            block.append(f"      <cmd>{command}</cmd>")
-            if getattr(step, "blocked_reason", None):
-                block.append(f"      BLOCKED: {step.blocked_reason}")
-            block.append(f"      <out>{text.strip()[:max_obs_chars]}</out>")
-            out.append("\n".join(block))
-        return "\n\n".join(out)
+            shown.append(SimpleNamespace(
+                raw_action={"name": getattr(action, "name", ""), "kwargs": {"command": command}},
+                policy_raw_response=(reasoning if "<think>" in reasoning else f"<think>{reasoning}</think>") if reasoning else None,
+                filtered_observation=getattr(step, "filtered_observation", None),
+                raw_observation=getattr(step, "raw_observation", None),
+                info=getattr(step, "info", None) or {},
+            ))
+        return LLMHarnessAgent._render_steps_for_mutator(shown, **kwargs)

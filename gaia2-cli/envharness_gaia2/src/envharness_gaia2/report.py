@@ -212,10 +212,10 @@ class Report:
     def designer_rendering(self) -> None:
         calls = _jsonl(self.run / "designer_calls.jsonl")
         texts = [json.dumps(c.get("messages", [])) for c in calls]
-        with_cmd = sum(1 for t in texts if re.search(r"<cmd>[^<]+</cmd>", t))
-        empty = sum(t.count("<cmd></cmd>") for t in texts)
+        with_cmd = sum(1 for t in texts if re.search(r"<action>[^<]+</action>", t))
+        empty = sum(t.count("<action></action>") for t in texts)
         self.add("4. Designer sees real commands", with_cmd > 0 and empty == 0,
-                 [f"- designer calls: {len(calls)}, with a non-empty <cmd>: {with_cmd}, empty <cmd>: {empty}"])
+                 [f"- designer calls: {len(calls)}, with a non-empty <action>: {with_cmd}, empty <action>: {empty}"])
 
     # 5 + 6 -----------------------------------------------------------------------
     def banks_and_injection(self) -> None:

@@ -51,8 +51,7 @@ TASK_DESCRIPTION = (
     "mutations that exercise failure-recovery skills WITHOUT shifting the env's surface "
     "presentation. The induced memory items should capture transferable assistant "
     "techniques (app CLI usage, verification, disambiguation) that close the gap on "
-    "held-out GAIA2 scenarios. The user request is the 'Task:' line at the start of "
-    "each trajectory."
+    "held-out GAIA2 scenarios."
 )
 
 
@@ -193,7 +192,7 @@ class Pipeline:
                 temperature=1.0,  # nominal; satisfies the band preflight (OpenClaw samples the rollouts)
             ),
             harness_agent=Gaia2HarnessAgent(self.designer_client, k=cfg.k, band=cfg.target_band),
-            objective=DifficultyZone(target_band=cfg.target_band),
+            objective=DifficultyZone(target_band=cfg.target_band, window=20),  # experiments/swebench/corpus.yaml
             budget=CappedAdaptive(max_k=cfg.max_k),
             trace_store=TraceStore(task_dir / "traces.jsonl"),
             tool_schemas=[EXEC_TOOL_SCHEMA],

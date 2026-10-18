@@ -48,13 +48,17 @@ Your Rules hooks run on every student call of an app CLI (one process per call):
       `calendar get-events --limit 5` -> argv == ["get-events", "--limit", "5"]
     Blocked(reason=...): the app does NOT run; `reason` is printed on stderr and the
       command exits 1 (looks like an app error to the student).
+    The student sees stderr, then stdout, in one tool output (a missing final newline
+    on stderr is added).
     Return Action(name=action.name, kwargs={**action.kwargs, "argv": [...]}) to run a
       different argv instead. Only kwargs["argv"] decides what runs (to run another
       subcommand of the same app, put it first in argv); name, subcommand and text are
       informational, and the app cannot change.
   modify_transition(action, response, env_state) -> EnvResponse   (T, after execution)
     response.observation.text = the command's stdout (JSON text for most subcommands;
-      this bridge has no info["result"]: parse the text with json.loads)
+      this bridge has no info["result"]: parse the text with json.loads). The apps
+      print json.dumps(value, indent=2) + "\\n" (non-ASCII escaped as \\uXXXX): write
+      changed JSON the same way, or the output no longer looks like the app's.
     response.info = {exit_code: int, stderr: str, wrote: bool}   # wrote: it changed app state
     Return EnvResponse(observation=Observation(text=...), info={...}) to change what the
       command reports (stdout / stderr / exit_code); the executed effect stays.
@@ -71,6 +75,9 @@ env_state (env_state.app or env_state["app"]; read-only except extras):
   executed_argv: list[str]           # (T/O only) argv that actually ran
   extras: dict                       # JSON scratch dict persisted across calls (write here)
 Each call is a new process: self attributes do not persist, keep state in extras.
+The counters include calls the CLI then rejects (e.g. a missing required option).
+The student may run several app calls at once; their hooks still run one at a time,
+and each hook sees extras as left by every hook that ran before it.
 Only Rules, Action, Blocked, Observation, EnvResponse are pre-bound. Every module you
 use must be imported at the top of rules_code (e.g. `import json` before json.loads),
 and only re, json, random, hashlib, itertools and textwrap may be imported; no file,

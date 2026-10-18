@@ -78,15 +78,23 @@ def test_logging_client_appends_whole_records_from_threads(tmp_path):
     assert len(lines) == 16 and all(json.loads(line)["role"] == "induce" for line in lines)
 
 
-def test_step_renderer_shows_commands():
+def test_step_renderer_shows_commands_in_the_upstream_format():
     step = Step(raw_action=Action(name="exec", kwargs={"command": "contacts get-contacts --offset 0"}),
-                blocked_reason="Error: temporarily unavailable",
-                filtered_observation=Observation(text="[]"), policy_raw_response="look up contacts")
+                filtered_observation=Observation(text="x" * 1000), policy_raw_response="look up contacts")
     text = Gaia2HarnessAgent._render_steps_for_mutator([step])
-    assert "<cmd>contacts get-contacts --offset 0</cmd>" in text
-    assert "BLOCKED: Error: temporarily unavailable" in text and "look up contacts" in text
+    assert "<action>contacts get-contacts --offset 0</action>" in text
+    assert "<think>look up contacts</think>" in text
+    assert "Observation: " + "x" * 400 + " ...[truncated]" in text  # upstream obs limit
+
+
+def test_step_renderer_is_upstream_apart_from_the_command():
+    # Steps in the dict form the upstream renderer reads commands from.
+    steps = [SimpleNamespace(raw_action={"name": "exec", "kwargs": {"command": f"cabs list-rides --offset {i}"}},
+                             filtered_observation=Observation(text=f"out {i}" * 99), raw_observation=None,
+                             policy_raw_response=f"<think>t{i}</think>", info={}) for i in range(14)]
+    assert Gaia2HarnessAgent._render_steps_for_mutator(steps) == LLMHarnessAgent._render_steps_for_mutator(steps)
 
 
 def test_reply_step_renders_the_answer():
     step = Step(raw_action=Action(name="reply", kwargs={"text": "Booked the cab."}), filtered_observation=Observation(text=""))
-    assert "<cmd>Booked the cab.</cmd>" in Gaia2HarnessAgent._render_steps_for_mutator([step])
+    assert "<action>Booked the cab.</action>" in Gaia2HarnessAgent._render_steps_for_mutator([step])
