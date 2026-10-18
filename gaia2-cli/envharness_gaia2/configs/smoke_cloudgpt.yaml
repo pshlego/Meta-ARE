@@ -7,8 +7,8 @@ schema_version: envharness-gaia2/v2
 meta_are_repo: /mnt/data2/v-parksungho_icml/Meta-ARE        # feat/gaia2-openclaw-envharness
 seed_harness_dir: gaia2-cli/harness/openclaw                 # the student's harness; only skills/ gets the bank
 harness_policy: gaia2-cli/envharness_gaia2/configs/harness_policy_skillbank.json
-image: localhost/gaia2-oc:envh-3dd82a566deb                  # + rules bundle hidden from the agent (3dd82a566deb)
-image_id: sha256:3770ea358b3f1d957cdd40405925566a8469b9fd8ffce246ad49fe84348565fd
+image: localhost/gaia2-oc:envh-fed52f96ebf2                  # + atomic extras for parallel app calls (fed52f96ebf2)
+image_id: sha256:3065d87fbcffbc122cff5bc1f9bb3f2026147ddd6f980a85ca113296c448b684
 container_runtime: docker
 docker_group: docker
 
