@@ -209,22 +209,24 @@ def _next_call_index(state: dict, app: str, subcommand: str, is_help: bool) -> t
 
 
 @contextlib.contextmanager
-def _hook_phase(home: Path, env_state: "EnvState"):
-    """Run hooks with ``extras`` read, changed and stored under the state lock.
+def _one_call_at_a_time(home: Path, env_state: "EnvState"):
+    """Apply one app call (A, execution, T, O) at a time, with ``extras`` stored after it.
 
-    The student often runs app calls in parallel; holding the lock from reading
-    ``extras`` to storing it makes each hook phase see every earlier call's
-    changes, as in the original's sequential episode (counters, one-shots).
-    The app itself runs outside the lock.
+    The student often runs app calls in parallel; envharness steps an episode
+    one action at a time, so every hook sees ``extras`` and the counters as
+    left by all earlier calls, and nothing runs between this call's A and T/O.
+    Rules-free calls (baseline, evaluation) never take this lock.
     """
     with _locked_state(home) as state:
         stored = state.get("extras")
         env_state["extras"] = Extras(stored if isinstance(stored, dict) else {})
-        yield state
         try:
-            state["extras"] = json.loads(json.dumps(env_state.get("extras")))
-        except (TypeError, ValueError):
-            _append(home / "errors.log", "env_state['extras'] is not JSON-serializable; not saved\n")
+            yield state
+        finally:
+            try:
+                state["extras"] = json.loads(json.dumps(env_state.get("extras")))
+            except (TypeError, ValueError):
+                _append(home / "errors.log", "env_state['extras'] is not JSON-serializable; not saved\n")
 
 
 @contextlib.contextmanager
@@ -237,8 +239,10 @@ def _locked_state(home: Path):
                 state = json.loads(state_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 state = {}
-            yield state
-            state_path.write_text(json.dumps(state), encoding="utf-8")
+            try:
+                yield state
+            finally:  # also when the app raises: its call still counts
+                state_path.write_text(json.dumps(state), encoding="utf-8")
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
@@ -314,43 +318,45 @@ def run_app(app: str, group: Any) -> None:
         kwargs={"argv": list(argv), "subcommand": subcommand, "text": shlex.join([app, *argv])},
     )
 
-    # A: transform or reject before execution.
-    with _hook_phase(home, env_state) as state:
+    blocked = None
+    with _one_call_at_a_time(home, env_state) as state:
         app_index, total_index, subcommand_index = _next_call_index(state, app, subcommand, is_help)
         env_state.update(call_index_app=app_index, call_index_total=total_index,
                          call_index_subcommand=subcommand_index)
+        # A: transform or reject before execution.
         try:
             decision = rules.filter_action(action, env_state)
         except Exception:
             _error(home, app, "filter_action raised; running unchanged")
             decision = action
-    if isinstance(decision, Blocked) or getattr(decision, "kind", None) == "blocked":
-        reason = str(getattr(decision, "reason", "") or "Error: request failed")
-        _record(home, app, subcommand, "blocked", argv, reason=reason)
-        print(reason, file=sys.stderr)
+        if isinstance(decision, Blocked) or getattr(decision, "kind", None) == "blocked":
+            blocked = str(getattr(decision, "reason", "") or "Error: request failed")
+            _record(home, app, subcommand, "blocked", argv, reason=blocked)
+        else:
+            exec_argv = _argv_of(decision, argv)
+            if exec_argv != argv:
+                _record(home, app, subcommand, "action_rewritten", argv, new_argv=exec_argv)
+            executed = decision if isinstance(decision, Action) else action
+            env_state["executed_argv"] = exec_argv
+
+            writes_before = _write_count()
+            out_buffer, err_buffer = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out_buffer), contextlib.redirect_stderr(err_buffer):
+                code = _invoke(group, app, exec_argv)
+            stdout, stderr = out_buffer.getvalue(), err_buffer.getvalue()
+            wrote = _write_count() > writes_before
+
+            # T, then O, on the executed command's result.
+            response = EnvResponse(
+                observation=Observation(text=stdout, data={"exit_code": code, "wrote": wrote}),
+                info={"exit_code": code, "stderr": stderr, "wrote": wrote},
+            )
+            stdout, code, stderr = _transition_and_observation(
+                home, rules, app, subcommand, argv, executed, response, env_state, wrote)
+
+    if blocked is not None:
+        print(blocked, file=sys.stderr)
         sys.exit(1)
-    exec_argv = _argv_of(decision, argv)
-    if exec_argv != argv:
-        _record(home, app, subcommand, "action_rewritten", argv, new_argv=exec_argv)
-    executed = decision if isinstance(decision, Action) else action
-    env_state["executed_argv"] = exec_argv
-
-    writes_before = _write_count()
-    out_buffer, err_buffer = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out_buffer), contextlib.redirect_stderr(err_buffer):
-        code = _invoke(group, app, exec_argv)
-    stdout, stderr = out_buffer.getvalue(), err_buffer.getvalue()
-    wrote = _write_count() > writes_before
-
-    # T: transform the executed command's result.
-    response = EnvResponse(
-        observation=Observation(text=stdout, data={"exit_code": code, "wrote": wrote}),
-        info={"exit_code": code, "stderr": stderr, "wrote": wrote},
-    )
-    with _hook_phase(home, env_state):
-        stdout, code, stderr = _transition_and_observation(
-            home, rules, app, subcommand, argv, executed, response, env_state, wrote)
-
     if stderr and not stderr.endswith("\n"):
         stderr += "\n"  # a CLI's messages end with a newline; keep stdout on its own line
     sys.stderr.write(stderr)

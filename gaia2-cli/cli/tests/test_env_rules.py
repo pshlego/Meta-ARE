@@ -245,6 +245,49 @@ def test_parallel_calls_see_each_others_extras(env, monkeypatch, capsys):
     assert stored["extras"] == {"done": True, "n": 1} and stored["total"] == 4
 
 
+def test_parallel_calls_run_one_at_a_time(env, monkeypatch, capsys):
+    """Nothing runs between one call's A and its T/O, as in envharness's sequential episode."""
+    import multiprocessing
+
+    state, home = env
+    _rules(
+        home,
+        "import time\n"
+        "class _Rules(Rules):\n"
+        "    def filter_action(self, action, env_state):\n"
+        "        env_state.get('extras')['current'] = action.kwargs['text']\n"
+        "        time.sleep(0.2)\n"
+        "        return action\n"
+        "    def modify_transition(self, action, response, env_state):\n"
+        "        extras = env_state.get('extras')\n"
+        "        if extras.get('current') != action.kwargs['text']:\n"
+        "            extras['interleaved'] = extras.get('interleaved', 0) + 1\n"
+        "        return response\n",
+    )
+    ctx = multiprocessing.get_context("fork")
+    procs = [ctx.Process(target=_parallel_search, args=(["search-events", "--query", f"q{i}"],)) for i in range(4)]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join(30)
+    stored = json.loads((home / "state.json").read_text())
+    assert stored["total"] == 4 and "interleaved" not in stored["extras"]
+
+
+def test_a_crashing_app_call_still_counts(env, monkeypatch, capsys):
+    state, home = env
+    _rules(home, "class _Rules(Rules):\n    pass\n")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("app bug")
+
+    monkeypatch.setattr(env_rules, "_invoke", boom)
+    monkeypatch.setattr(sys, "argv", ["calendar", *SEARCH])
+    with pytest.raises(RuntimeError):
+        env_rules.run_app("calendar", calendar_app.cli)
+    assert json.loads((home / "state.json").read_text())["total"] == 1
+
+
 def test_stderr_ends_with_a_newline(env, monkeypatch, capsys):
     state, home = env
     _rules(

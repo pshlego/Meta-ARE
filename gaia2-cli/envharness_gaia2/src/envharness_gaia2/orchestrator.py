@@ -76,8 +76,9 @@ env_state (env_state.app or env_state["app"]; read-only except extras):
   extras: dict                       # JSON scratch dict persisted across calls (write here)
 Each call is a new process: self attributes do not persist, keep state in extras.
 The counters include calls the CLI then rejects (e.g. a missing required option).
-The student may run several app calls at once; their hooks still run one at a time,
-and each hook sees extras as left by every hook that ran before it.
+The student may run several app calls at once; they are still applied one at a time
+(A, execution, T and O of one call finish before the next call starts), so every hook
+sees extras as left by all earlier calls.
 Only Rules, Action, Blocked, Observation, EnvResponse are pre-bound. Every module you
 use must be imported at the top of rules_code (e.g. `import json` before json.loads),
 and only re, json, random, hashlib, itertools and textwrap may be imported; no file,
