@@ -286,7 +286,8 @@ start_eventd() {
         return
     fi
 
-    touch "$EVENTD_LOG" && chown gaia2:gaia2 "$EVENTD_LOG"
+    # gaia2-only: the daemon logs the scenario's oracle event count and ids.
+    touch "$EVENTD_LOG" && chown gaia2:gaia2 "$EVENTD_LOG" && chmod 600 "$EVENTD_LOG"
     # faketime.rc: gaia2-owned, world-readable.
     # Daemon (gaia2) writes it between turns. CLI tools (gaia2 via gaia2-exec)
     # and agent bash wrapper read it via libfaketime. Agent cannot modify it.

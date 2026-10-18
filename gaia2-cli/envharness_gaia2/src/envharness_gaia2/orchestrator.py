@@ -57,8 +57,8 @@ Your Rules hooks run on every student call of an app CLI (one process per call):
     obs.text = stdout shown to the student; obs.data = {exit_code, wrote}
 
 env_state (env_state.app or env_state["app"]; read-only except extras):
-  app: str; subcommand: str ("" or "schema" for probes); argv: list[str]
-  is_help: bool                      # --help / schema probes
+  app: str; subcommand: str; argv: list[str]
+  is_help: bool                      # True for probes (see below)
   call_index_app: int                # 1-based count of the student's calls to this app (incl. probes)
   call_index_total: int              # 1-based count of all app calls (incl. probes)
   call_index_subcommand: int         # 1-based count of real calls of this app+subcommand (0 for probes)
@@ -72,6 +72,11 @@ starting with "__", and references to os/sys/subprocess/socket/shutil/pathlib/io
 getattr/hasattr work for public names only. env_state, obs.data and response.info
 are dicts (env_state also allows attribute access): use env_state.get("key").
 Not reachable by hooks: the user's request and notifications (delivered by OpenClaw).
+Probes also go through all three hooks: `<app> --help`, `<app> schema` and
+`<app> <subcommand> --help`, which the student uses to learn the CLIs (they print
+usage and change nothing). `<app> <subcommand> --help` has the same action.name and
+subcommand as a real call of that subcommand; only is_help tells them apart.
+For `<app> --help` and `<app> schema`, subcommand is "" and "schema".
 
 Setup (in_env_actions, S0): app CLI calls run by the ENVIRONMENT before the student
 starts, e.g. {"name": "exec", "kwargs_json": "{\\"command\\": \\"contacts add-new-contact --first-name Ana\\"}"}.
@@ -80,8 +85,8 @@ they change the initial app state but are not the student's actions. They run
 instantly at the scenario's start time, before any scheduled environment event and
 before the student starts: they cannot wait for or trigger later events, read
 commands among them have no effect, and their output is not shown to anyone. A
-failing command (e.g. an invalid option) is skipped, so use exact `<app> <subcommand>
---help` options.
+failing command (e.g. an invalid option) is skipped, so use the exact options listed
+below.
 """
 
 

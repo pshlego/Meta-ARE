@@ -1,119 +1,329 @@
 # Gaia2 app CLIs available to the agent (via OpenClaw `exec`)
 
-Each app is a shell command; subcommands below (state-changing ones marked [write] when the name implies it).
+Usage: `<app> <subcommand> [ARGS] [--option VALUE ...]`. Every subcommand with its exact
+arguments and options (the same information `<app> schema` and `<app> <subcommand> --help`
+give the student). An option that is not listed is rejected by the CLI (exit 2,
+"No such option"). [write] = the subcommand changes app state.
 
 ## `calendar`
-- `calendar add-event` [write] — Add a calendar event to the calendar.
-- `calendar delete-event` [write] — Delete a calendar event from the calendar.
-- `calendar get-all-tags` — Get all tags from the calendar.
+- `calendar add-event` [write] — Add a calendar event to the calendar. Unless specified otherwise in the task, the default week starts on Mo...
+  - `--title TEXT (default "Event")` — Title of the event.
+  - `--start-datetime TEXT` — Start datetime in YYYY-MM-DD HH:MM:SS format.
+  - `--end-datetime TEXT` — End datetime in YYYY-MM-DD HH:MM:SS format.
+  - `--tag TEXT` — Tag of the event. Defaults to None.
+  - `--description TEXT` — Description of the event. Defaults to None.
+  - `--location TEXT` — Location of the event. Defaults to None.
+  - `--attendees TEXT` — JSON list of attendees full names, e.g. '["Alice", "Bob"]'.
 - `calendar get-event` — Read a calendar event from the calendar.
-- `calendar get-events` — Get calendar events that have any time overlap with the specified date range (excludes...
-- `calendar get-events-by-tag` — Get calendar events from the calendar by tag.
-- `calendar search-events` — Searches for calendar events based on a query string.
+  - `--event-id TEXT (required)` — Id of the event to read.
+- `calendar delete-event` [write] — Delete a calendar event from the calendar.
+  - `--event-id TEXT (required)` — Id of the event to delete.
+- `calendar get-events` — Get calendar events that have any time overlap with the specified date range (excludes events that only tou...
+  - `--start-date TEXT (required)` — Start datetime of the range in YYYY-MM-DD HH:MM:SS format.
+  - `--end-date TEXT (required)` — End datetime of the range in YYYY-MM-DD HH:MM:SS format.
+  - `--offset INTEGER` — Offset to start listing from, default is 0.
+  - `--limit INTEGER (default 10)` — Number of events to list, default is 10.
 - `calendar today-events` — Read today's calendar events from the calendar.
+- `calendar get-all-tags` — Get all tags from the calendar.
+- `calendar get-events-by-tag` — Get calendar events from the calendar by tag.
+  - `--tag TEXT (required)` — Tag for which to get the events.
+- `calendar search-events` — Searches for calendar events based on a query string. The search looks for partial matches in title, descri...
+  - `--query TEXT (required)` — The search query string.
 
 ## `contacts`
-- `contacts add-new-contact` [write] — Adds a new contact to the contacts app.
-- `contacts delete-contact` [write] — Deletes a specific contact by contact_id.
-- `contacts edit-contact` [write] — Edits specific fields of a contact by contact_id.
+- `contacts get-contacts` — Gets the list of contacts starting from a specified offset. There is a view limit. Use offset to scroll thr...
+  - `--offset INTEGER` — Starting point to retrieve contacts from, default is 0.
 - `contacts get-contact` — Gets a specific contact by contact_id.
-- `contacts get-contacts` — Gets the list of contacts starting from a specified offset.
-- `contacts get-current-user-details` — Gets the current user's details including name, phone number, email address,...
-- `contacts search-contacts` — Searches for contacts based on a query string.
+  - `--contact-id TEXT (required)` — ID of the contact to retrieve.
+- `contacts get-current-user-details` — Gets the current user's details including name, phone number, email address, nationality, country living.
+- `contacts add-new-contact` [write] — Adds a new contact to the contacts app.
+  - `--first-name TEXT (required)` — First name of the contact, required.
+  - `--last-name TEXT (required)` — Last name of the contact, required.
+  - `--gender TEXT` — Gender of the contact (Male, Female, Other, Unknown), optional default is Unknown.
+  - `--age INTEGER` — Age of the contact, optional.
+  - `--nationality TEXT` — Nationality of the contact, optional.
+  - `--city-living TEXT` — City where the contact is living, optional.
+  - `--country TEXT` — Country where the contact is living, optional.
+  - `--status TEXT` — Status of the contact (Student, Employed, Unemployed, Retired, Unknown), optional defau...
+  - `--job TEXT` — Job of the contact, optional.
+  - `--description TEXT` — Description of the contact, optional.
+  - `--phone TEXT` — Phone number of the contact, optional.
+  - `--email TEXT` — Email address of the contact, optional.
+  - `--address TEXT` — Address of the contact, optional.
+- `contacts edit-contact` [write] — Edits specific fields of a contact by contact_id.
+  - `--contact-id TEXT (required)` — ID of the contact to edit.
+  - `--updates TEXT (required)` — JSON dictionary of fields to update. Valid fields: first_name, last_name, gender (Male/...
+- `contacts delete-contact` [write] — Deletes a specific contact by contact_id.
+  - `--contact-id TEXT (required)` — ID of the contact to delete.
+- `contacts search-contacts` — Searches for contacts based on a query string. The search looks for partial matches in first name, last nam...
+  - `--query TEXT (required)` — The search query string.
 
 ## `emails`
-- `emails delete-email` [write] — Delete an email (moves it to TRASH).
-- `emails download-attachments` — Download attachments from an email to the local filesystem.
-- `emails forward-email` [write] — Forward an email to new recipients.
-- `emails get-email-by-id` — Get an email by its ID, marking it as read.
-- `emails get-email-by-index` — Get an email by its index in a folder, marking it as read.
 - `emails list-emails` — List emails in a folder with pagination.
-- `emails move-email` [write] — Move an email from one folder to another.
-- `emails reply-to-email` [write] — Reply to an email.
-- `emails search-emails` — Search emails by query string across sender, recipients, subject, and content.
+  - `--folder-name TEXT (default "INBOX")` — Folder name: INBOX, SENT, DRAFT, TRASH.
+  - `--offset INTEGER` — Offset of first email to return.
+  - `--limit INTEGER (default 10)` — Maximum number of emails to return.
+- `emails get-email-by-id` — Get an email by its ID, marking it as read.
+  - `--email-id TEXT (required)` — The email ID.
+  - `--folder-name TEXT (default "INBOX")` — Folder name (INBOX, SENT, DRAFT, TRASH).
+- `emails get-email-by-index` — Get an email by its index in a folder, marking it as read.
+  - `--idx INTEGER (required)` — Index in the folder (0-based, newest first).
+  - `--folder-name TEXT (default "INBOX")` — Folder name (INBOX, SENT, DRAFT, TRASH).
 - `emails send-email` [write] — Send an email to the specified recipients.
+  - `--recipients TEXT (required)` — JSON list of recipient email addresses, e.g. '["a@b.com"]'.
+  - `--subject TEXT (default "")` — Email subject.
+  - `--content TEXT (default "")` — Email body.
+  - `--cc TEXT` — JSON list of CC addresses (optional).
+  - `--attachment-paths TEXT` — JSON list of cloud-drive paths to attach, e.g. '["/Documents/report.pdf"]'.
+- `emails forward-email` [write] — Forward an email to new recipients.
+  - `--email-id TEXT (required)` — ID of the email to forward.
+  - `--recipients TEXT (required)` — JSON list of recipient email addresses.
+  - `--folder-name TEXT (default "INBOX")` — Folder containing the email (INBOX, SENT, DRAFT, TRASH).
+- `emails download-attachments` [write] — Download attachments from an email to the local filesystem.
+  - `--email-id TEXT (required)` — ID of the email.
+  - `--folder-name TEXT (default "INBOX")` — Folder containing the email (INBOX, SENT, DRAFT, TRASH).
+  - `--download-path TEXT (default "Downloads/")` — Cloud-drive directory to save attachments to.
+- `emails reply-to-email` [write] — Reply to an email.
+  - `--email-id TEXT (required)` — ID of the email to reply to.
+  - `--content TEXT (default "")` — Reply body.
+  - `--folder-name TEXT (default "INBOX")` — Folder containing the original email (INBOX, SENT, DRAFT, TRASH).
+  - `--attachment-paths TEXT` — JSON list of cloud-drive paths to attach, e.g. '["/Documents/report.pdf"]'.
+- `emails move-email` [write] — Move an email from one folder to another.
+  - `--email-id TEXT (required)` — ID of the email to move.
+  - `--source-folder-name TEXT (required)` — Source folder name (INBOX, SENT, DRAFT, TRASH).
+  - `--dest-folder-name TEXT (required)` — Destination folder name (INBOX, SENT, DRAFT, TRASH).
+- `emails delete-email` [write] — Delete an email (moves it to TRASH).
+  - `--email-id TEXT (required)` — ID of the email to delete.
+  - `--folder-name TEXT (default "INBOX")` — Folder containing the email (INBOX, SENT, DRAFT, TRASH).
+- `emails search-emails` — Search emails by query string across sender, recipients, subject, and content.
+  - `--query TEXT (required)` — Search query string.
+  - `--folder-name TEXT (default "INBOX")` — Folder to search in (INBOX, SENT, DRAFT, TRASH).
 
 ## `messages`
-- `messages add-participant-to-conversation` [write] — Add a user to a conversation.
-- `messages change-conversation-title` [write] — Change the title of a conversation.
-- `messages create-group-conversation` [write] — Create a new group conversation.
-- `messages download-attachment` — Download an attachment from a message.
-- `messages get-existing-conversation-ids` — Get conversation ids matching the exact set of participants.
 - `messages get-user-id` — Get user id for a given user name (exact match).
+  - `--user-name TEXT (required)` — Exact user name to look up
 - `messages get-user-name-from-id` — Get user name for a given user id (exact match).
-- `messages list-conversations-by-participant` — List conversations that include the given participant.
-- `messages list-recent-conversations` — List conversations ordered by most recent update.
-- `messages lookup-user-id` — Fuzzy lookup of user id by name.
-- `messages read-conversation` — Read messages from a conversation (most recent first).
-- `messages regex-search` — Search conversations using a regex pattern (case-insensitive).
-- `messages remove-participant-from-conversation` [write] — Remove a user from a conversation.
-- `messages search` — Search conversations by participants, title, and message content.
-- `messages send-message` [write] — Send a message to a user.
+  - `--user-id TEXT (required)` — Exact user id to look up
+- `messages lookup-user-id` — Fuzzy lookup of user id by name. Returns dict of matching name->id pairs.
+  - `--user-name TEXT (required)` — User name to fuzzy-search
+- `messages send-message` [write] — Send a message to a user. Creates conversation if none exists.
+  - `--user-id TEXT (required)` — Recipient user id
+  - `--content TEXT (default "")` — Message content
+  - `--attachment-path TEXT` — Cloud-drive path to attach, e.g. /Documents/report.pdf
 - `messages send-message-to-group-conversation` [write] — Send a message to an existing group conversation (3+ participants).
+  - `--conversation-id TEXT (required)` — Group conversation id
+  - `--content TEXT (default "")` — Message content
+  - `--attachment-path TEXT` — Cloud-drive path to attach, e.g. /Documents/report.pdf
+- `messages create-group-conversation` [write] — Create a new group conversation. Requires at least 2 other participants (you are added automatically).
+  - `--user-ids TEXT (required)` — JSON list of other participant user ids (not yourself), e.g. '["id1","id2"]'
+  - `--title TEXT` — Optional conversation title
+- `messages get-existing-conversation-ids` — Get conversation ids matching the exact set of participants.
+  - `--user-ids TEXT (required)` — JSON list of participant user ids
+- `messages list-recent-conversations` — List conversations ordered by most recent update.
+  - `--offset INTEGER` — Starting index
+  - `--limit INTEGER (default 5)` — Number of conversations
+  - `--offset-recent-messages-per-conversation INTEGER` — Message offset per conversation
+  - `--limit-recent-messages-per-conversation INTEGER (default 10)` — Message limit per conversation
+- `messages list-conversations-by-participant` — List conversations that include the given participant.
+  - `--user-id TEXT (required)` — Participant user id
+  - `--offset INTEGER` — Starting index
+  - `--limit INTEGER (default 5)` — Number of conversations
+  - `--offset-recent-messages-per-conversation INTEGER` — Message offset per conversation
+  - `--limit-recent-messages-per-conversation INTEGER (default 5)` — Message limit per conversation
+- `messages download-attachment` [write] — Download an attachment from a message.
+  - `--conversation-id TEXT (required)` — Conversation id
+  - `--message-id TEXT (required)` — Message id
+  - `--download-path TEXT (default "Downloads/")` — Cloud-drive directory to save attachment to
+- `messages read-conversation` — Read messages from a conversation (most recent first).
+  - `--conversation-id TEXT (required)` — Conversation id
+  - `--offset INTEGER` — Message offset
+  - `--limit INTEGER (default 10)` — Number of messages
+  - `--min-date TEXT` — Min date (YYYY-MM-DD HH:MM:SS)
+  - `--max-date TEXT` — Max date (YYYY-MM-DD HH:MM:SS)
+- `messages add-participant-to-conversation` [write] — Add a user to a conversation. Updates title if it was the default.
+  - `--conversation-id TEXT (required)` — Conversation id
+  - `--user-id TEXT (required)` — User id to add
+- `messages remove-participant-from-conversation` [write] — Remove a user from a conversation. Updates title if it was the default.
+  - `--conversation-id TEXT (required)` — Conversation id
+  - `--user-id TEXT (required)` — User id to remove
+- `messages change-conversation-title` [write] — Change the title of a conversation.
+  - `--conversation-id TEXT (required)` — Conversation id
+  - `--title TEXT (required)` — New title
+- `messages search` — Search conversations by participants, title, and message content.
+  - `--query TEXT (required)` — Case-insensitive search query
+  - `--min-date TEXT` — Min date (YYYY-MM-DD HH:MM:SS)
+  - `--max-date TEXT` — Max date (YYYY-MM-DD HH:MM:SS)
+- `messages regex-search` — Search conversations using a regex pattern (case-insensitive).
+  - `--query TEXT (required)` — Regex search query
+  - `--min-date TEXT` — Min date (YYYY-MM-DD HH:MM:SS)
+  - `--max-date TEXT` — Max date (YYYY-MM-DD HH:MM:SS)
 
 ## `chats`
-- `chats add-participant-to-conversation` [write] — Add a user to a conversation.
-- `chats change-conversation-title` [write] — Change the title of a conversation.
-- `chats create-group-conversation` [write] — Create a new group conversation.
-- `chats download-attachment` — Download an attachment from a message.
-- `chats get-existing-conversation-ids` — Get conversation ids matching the exact set of participants.
 - `chats get-user-id` — Get user id for a given user name (exact match).
+  - `--user-name TEXT (required)` — Exact user name to look up
 - `chats get-user-name-from-id` — Get user name for a given user id (exact match).
-- `chats list-conversations-by-participant` — List conversations that include the given participant.
-- `chats list-recent-conversations` — List conversations ordered by most recent update.
-- `chats lookup-user-id` — Fuzzy lookup of user id by name.
-- `chats read-conversation` — Read messages from a conversation (most recent first).
-- `chats regex-search` — Search conversations using a regex pattern (case-insensitive).
-- `chats remove-participant-from-conversation` [write] — Remove a user from a conversation.
-- `chats search` — Search conversations by participants, title, and message content.
-- `chats send-message` [write] — Send a message to a user.
+  - `--user-id TEXT (required)` — Exact user id to look up
+- `chats lookup-user-id` — Fuzzy lookup of user id by name. Returns dict of matching name->id pairs.
+  - `--user-name TEXT (required)` — User name to fuzzy-search
+- `chats send-message` [write] — Send a message to a user. Creates conversation if none exists.
+  - `--user-id TEXT (required)` — Recipient user id
+  - `--content TEXT (default "")` — Message content
+  - `--attachment-path TEXT` — Cloud-drive path to attach, e.g. /Documents/report.pdf
 - `chats send-message-to-group-conversation` [write] — Send a message to an existing group conversation (3+ participants).
+  - `--conversation-id TEXT (required)` — Group conversation id
+  - `--content TEXT (default "")` — Message content
+  - `--attachment-path TEXT` — Cloud-drive path to attach, e.g. /Documents/report.pdf
+- `chats create-group-conversation` [write] — Create a new group conversation. Requires at least 2 other participants (you are added automatically).
+  - `--user-ids TEXT (required)` — JSON list of other participant user ids (not yourself), e.g. '["id1","id2"]'
+  - `--title TEXT` — Optional conversation title
+- `chats get-existing-conversation-ids` — Get conversation ids matching the exact set of participants.
+  - `--user-ids TEXT (required)` — JSON list of participant user ids
+- `chats list-recent-conversations` — List conversations ordered by most recent update.
+  - `--offset INTEGER` — Starting index
+  - `--limit INTEGER (default 5)` — Number of conversations
+  - `--offset-recent-messages-per-conversation INTEGER` — Message offset per conversation
+  - `--limit-recent-messages-per-conversation INTEGER (default 10)` — Message limit per conversation
+- `chats list-conversations-by-participant` — List conversations that include the given participant.
+  - `--user-id TEXT (required)` — Participant user id
+  - `--offset INTEGER` — Starting index
+  - `--limit INTEGER (default 5)` — Number of conversations
+  - `--offset-recent-messages-per-conversation INTEGER` — Message offset per conversation
+  - `--limit-recent-messages-per-conversation INTEGER (default 5)` — Message limit per conversation
+- `chats download-attachment` [write] — Download an attachment from a message.
+  - `--conversation-id TEXT (required)` — Conversation id
+  - `--message-id TEXT (required)` — Message id
+  - `--download-path TEXT (default "Downloads/")` — Cloud-drive directory to save attachment to
+- `chats read-conversation` — Read messages from a conversation (most recent first).
+  - `--conversation-id TEXT (required)` — Conversation id
+  - `--offset INTEGER` — Message offset
+  - `--limit INTEGER (default 10)` — Number of messages
+  - `--min-date TEXT` — Min date (YYYY-MM-DD HH:MM:SS)
+  - `--max-date TEXT` — Max date (YYYY-MM-DD HH:MM:SS)
+- `chats add-participant-to-conversation` [write] — Add a user to a conversation. Updates title if it was the default.
+  - `--conversation-id TEXT (required)` — Conversation id
+  - `--user-id TEXT (required)` — User id to add
+- `chats remove-participant-from-conversation` [write] — Remove a user from a conversation. Updates title if it was the default.
+  - `--conversation-id TEXT (required)` — Conversation id
+  - `--user-id TEXT (required)` — User id to remove
+- `chats change-conversation-title` [write] — Change the title of a conversation.
+  - `--conversation-id TEXT (required)` — Conversation id
+  - `--title TEXT (required)` — New title
+- `chats search` — Search conversations by participants, title, and message content.
+  - `--query TEXT (required)` — Case-insensitive search query
+  - `--min-date TEXT` — Min date (YYYY-MM-DD HH:MM:SS)
+  - `--max-date TEXT` — Max date (YYYY-MM-DD HH:MM:SS)
+- `chats regex-search` — Search conversations using a regex pattern (case-insensitive).
+  - `--query TEXT (required)` — Regex search query
+  - `--min-date TEXT` — Min date (YYYY-MM-DD HH:MM:SS)
+  - `--max-date TEXT` — Max date (YYYY-MM-DD HH:MM:SS)
 
 ## `rent-a-flat`
-- `rent-a-flat get-apartment-details` — Get apartment details for a given apartment id.
 - `rent-a-flat list-all-apartments` — List all apartments in the catalog.
-- `rent-a-flat list-saved-apartments` [write] — List apartments saved to favorites.
-- `rent-a-flat remove-saved-apartment` [write] — Remove an apartment from favorites.
+- `rent-a-flat get-apartment-details` — Get apartment details for a given apartment id.
+  - `--apartment-id TEXT (required)` — Apartment ID to look up
 - `rent-a-flat save-apartment` [write] — Save an apartment to favorites.
+  - `--apartment-id TEXT (required)` — Apartment ID to save to favorites
+- `rent-a-flat remove-saved-apartment` [write] — Remove an apartment from favorites.
+  - `--apartment-id TEXT (required)` — Apartment ID to remove from favorites
+- `rent-a-flat list-saved-apartments` — List apartments saved to favorites.
 - `rent-a-flat search-apartments` — Search for apartments based on multiple filters.
+  - `--name TEXT` — Name of the apartment
+  - `--location TEXT` — Desired location
+  - `--zip-code TEXT` — Zip code of the location
+  - `--min-price FLOAT` — Minimum price
+  - `--max-price FLOAT` — Maximum price
+  - `--number-of-bedrooms INTEGER` — Number of bedrooms
+  - `--number-of-bathrooms INTEGER` — Number of bathrooms
+  - `--property-type TEXT` — Type of property (Apartment, Condo, House, Studio)
+  - `--square-footage INTEGER` — Minimum square footage
+  - `--furnished-status TEXT` — Furnished, Unfurnished, or Semi-furnished
+  - `--floor-level TEXT` — Ground floor, Upper floors, Penthouse, Basement
+  - `--pet-policy TEXT` — Pets allowed, No pets, Cats allowed, Dogs allowed
+  - `--lease-term TEXT` — Month-to-month, 6 months, 1 year, Long term lease
+  - `--amenities TEXT` — Comma-separated list of desired amenities, or JSON array
+  - `--saved-only` — Search only saved apartments
 
 ## `city`
+- `city get-crime-rate` — Get crime rate for a given zip code (rate-limited).
+  - `--zip-code TEXT (required)` — Zip code to get crime rate for
 - `city get-api-call-count` — Get the current API call count.
 - `city get-api-call-limit` — Get the API call limit for the service.
-- `city get-crime-rate` — Get crime rate for a given zip code (rate-limited).
 
 ## `cabs`
-- `cabs get-current-ride-status` — Check the status of the current ride.
 - `cabs get-quotation` — Calculate price and estimated delay for a ride.
-- `cabs get-ride` — Get a specific ride from ride history by index.
-- `cabs get-ride-history` — Get ride history with pagination.
-- `cabs get-ride-history-length` — Get the total number of rides in history.
+  - `--start-location TEXT (required)` — Starting point of the ride
+  - `--end-location TEXT (required)` — Ending point of the ride
+  - `--service-type TEXT (required)` — Type of service (Default, Premium, Van)
+  - `--ride-time TEXT` — Ride time in YYYY-MM-DD HH:MM:SS format
 - `cabs list-rides` — List all rides available between two locations.
+  - `--start-location TEXT (required)` — Starting point of the ride
+  - `--end-location TEXT (required)` — Ending point of the ride
+  - `--ride-time TEXT` — Ride time in YYYY-MM-DD HH:MM:SS format
 - `cabs order-ride` [write] — Order a ride and return ride details.
+  - `--start-location TEXT (required)` — Starting point of the ride
+  - `--end-location TEXT (required)` — Ending point of the ride
+  - `--service-type TEXT (required)` — Type of service (Default, Premium, Van)
+  - `--ride-time TEXT` — Ride time in YYYY-MM-DD HH:MM:SS format
 - `cabs user-cancel-ride` [write] — Cancel the current ride.
+- `cabs get-current-ride-status` — Check the status of the current ride.
+- `cabs get-ride` — Get a specific ride from ride history by index.
+  - `--idx INTEGER (required)` — Index of the ride in history
+- `cabs get-ride-history` — Get ride history with pagination.
+  - `--offset INTEGER` — Starting index (default 0)
+  - `--limit INTEGER (default 10)` — Max number of rides to return (default 10)
+- `cabs get-ride-history-length` — Get the total number of rides in history.
 
 ## `shopping`
-- `shopping add-to-cart` [write] — Add an item to the cart.
-- `shopping cancel-order` [write] — Cancel an order.
-- `shopping checkout` [write] — Checkout the current cart and create an order.
-- `shopping get-all-discount-codes` — List all available discount codes.
-- `shopping get-discount-code-info` — Get information about a specific discount code.
-- `shopping get-order-details` [write] — Get details for a specific order.
-- `shopping get-product-details` — Get product details for a given product ID.
 - `shopping list-all-products` — List all products in the catalog.
-- `shopping list-cart` — List the contents of the cart.
-- `shopping list-orders` [write] — List all orders.
-- `shopping remove-from-cart` [write] — Remove an item from the cart.
+  - `--offset INTEGER` — Offset to start listing from.
+  - `--limit INTEGER (default 10)` — Number of products to list.
+- `shopping get-product-details` — Get product details for a given product ID.
+  - `--product-id TEXT (required)` — Product ID to get details for.
 - `shopping search-products` — Search for products by name (case-insensitive substring match).
+  - `--product-name TEXT (required)` — Product name to search for (case-insensitive substring match).
+  - `--offset INTEGER` — Offset to start listing from.
+  - `--limit INTEGER (default 10)` — Number of products to list.
+- `shopping add-to-cart` [write] — Add an item to the cart.
+  - `--item-id TEXT (required)` — Item (variant) ID to add to cart.
+  - `--quantity INTEGER (default 1)` — Quantity to add (default 1).
+- `shopping remove-from-cart` [write] — Remove an item from the cart.
+  - `--item-id TEXT (required)` — Item (variant) ID to remove from cart.
+  - `--quantity INTEGER (default 1)` — Quantity to remove (default 1).
+- `shopping list-cart` — List the contents of the cart.
+- `shopping checkout` [write] — Checkout the current cart and create an order.
+  - `--discount-code TEXT` — Optional discount code to apply.
+- `shopping get-discount-code-info` — Get information about a specific discount code.
+  - `--discount-code TEXT (required)` — Discount code to look up.
+- `shopping get-all-discount-codes` — List all available discount codes.
+- `shopping list-orders` — List all orders.
+- `shopping get-order-details` — Get details for a specific order.
+  - `--order-id TEXT (required)` — Order ID to get details for.
+- `shopping cancel-order` [write] — Cancel an order. Only orders with status 'processed' or 'shipped' can be cancelled.
+  - `--order-id TEXT (required)` — Order ID to cancel.
 
 ## `cloud-drive`
 - `cloud-drive cat` — Read the contents of a file and print to stdout.
-- `cloud-drive exists` — Check if a file or directory exists.
-- `cloud-drive info` — Get metadata about a file or directory.
+  - `--path TEXT (required)` — Path to the file to read.
 - `cloud-drive ls` — List the contents of a directory.
-- `cloud-drive makedirs` — Create nested directories (like mkdir -p).
-- `cloud-drive mkdir` — Create a directory.
-- `cloud-drive mv` — Move a file or directory.
-- `cloud-drive rm` — Remove a file or directory.
-- `cloud-drive rmdir` — Remove an empty directory.
+  - `--path TEXT (required)` — Path to the directory to list.
+  - `--detail` — Show detailed info for each entry.
+- `cloud-drive exists` — Check if a file or directory exists.
+  - `--path TEXT (required)` — Path to check.
+- `cloud-drive info` — Get metadata about a file or directory.
+  - `--path TEXT (required)` — Path to get info about.
 - `cloud-drive tree` — Generate a directory tree listing.
+  - `--path TEXT (default "/")` — Path to start the tree from (default: /).
+- `cloud-drive mkdir` [write] — Create a directory.
+  - `--path TEXT (required)` — Path of the directory to create.
+  - `--create-parents` — Create parent directories if they do not exist.
+- `cloud-drive makedirs` [write] — Create nested directories (like mkdir -p).
+  - `--path TEXT (required)` — Path of nested directories to create.
+  - `--exist-ok` — Do not raise an error if the directory already exists.
+- `cloud-drive mv` [write] — Move a file or directory.
+  - `--source TEXT (required)` — Source path.
+  - `--destination TEXT (required)` — Destination path.
+- `cloud-drive rm` [write] — Remove a file or directory.
+  - `--path TEXT (required)` — Path to remove.
+  - `--recursive` — Remove directories and their contents recursively.
+- `cloud-drive rmdir` [write] — Remove an empty directory.
+  - `--path TEXT (required)` — Path of the empty directory to remove.
