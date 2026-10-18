@@ -70,24 +70,37 @@ def leaked_blocked_writes(scenario_dir: Path, functions: dict[tuple[str, str], s
     the writes of its function cannot exceed the agent's invocations of that
     subcommand minus the blocked ones. Invocations are counted from the exec
     commands (an upper bound: a failed `a && b` chain counts b too), so the check
-    never flags a concurrent allowed call of the same subcommand.
+    never flags a concurrent allowed call of the same subcommand. A loop runs one
+    command text many times, so only writes carrying every argument value of some
+    blocked call are counted.
     """
     from envharness_gaia2.trace_convert import _exec_command, conversation
 
-    blocked: dict[tuple[str, str], int] = {}
+    blocked: dict[tuple[str, str], list[list[str] | None]] = {}
     for entry in _jsonl(scenario_dir / "env_rules_applied.jsonl"):
         if entry.get("kind") == "blocked":
             key = (entry.get("app", ""), entry.get("subcommand", ""))
-            blocked[key] = blocked.get(key, 0) + 1
+            argv = entry.get("argv")
+            values = None if argv is None else [
+                tok.split("=", 1)[1] if tok.startswith("--") and "=" in tok else tok
+                for tok in argv[1:] if not (tok.startswith("-") and "=" not in tok)]
+            blocked.setdefault(key, []).append(values)
     if not blocked:
         return 0
+
+    def could_be(event: dict, values: list[str] | None) -> bool:
+        args = {str(v) for v in (event.get("args") or {}).values()}
+        return values is None or all(v in args for v in values)
+
     events = _jsonl(scenario_dir / "events.jsonl")
     commands = [_exec_command(call) for message in conversation(scenario_dir)
                 for call in message.get("tool_calls") or [] if isinstance(call, dict)]
     leaked = 0
-    for (app, subcommand), n_blocked in blocked.items():
+    for (app, subcommand), calls in blocked.items():
+        n_blocked = len(calls)
         function = functions.get((app, subcommand))
-        writes = sum(1 for ev in events if ev.get("w") is True and ev.get("fn") == function)
+        writes = sum(1 for ev in events if ev.get("w") is True and ev.get("fn") == function
+                     and any(could_be(ev, values) for values in calls))
         if function is None or writes == 0:
             continue
         call = re.compile(rf"(?<![\w-]){re.escape(app)}\s+{re.escape(subcommand)}(?![\w-])(?![^;&|]*--help)")
