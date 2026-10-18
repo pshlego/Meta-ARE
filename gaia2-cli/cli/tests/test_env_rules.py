@@ -185,6 +185,37 @@ def test_extras_persist_across_calls(env, monkeypatch, capsys):
     assert json.loads((home / "state.json").read_text())["extras"] == {"seen": 3}
 
 
+def test_empty_extras_or_fallback_still_persists(env, monkeypatch, capsys):
+    # `env_state.get("extras") or {}` on the first call must not detach from the saved dict
+    state, home = env
+    _rules(
+        home,
+        "class _Rules(Rules):\n"
+        "    def modify_transition(self, action, response, env_state):\n"
+        "        extras = env_state.get('extras') or {}\n"
+        "        count = extras.get('errors', 0)\n"
+        "        if count < 1:\n"
+        "            extras['errors'] = count + 1\n"
+        "            return EnvResponse(observation=Observation(text=''), info={**response.info, 'exit_code': 1})\n"
+        "        return response\n",
+    )
+    assert _run(monkeypatch, capsys, SEARCH)[0] == 1
+    assert _run(monkeypatch, capsys, SEARCH)[0] == 0
+    assert json.loads((home / "state.json").read_text())["extras"] == {"errors": 1}
+
+
+def test_parallel_calls_do_not_drop_each_others_extras(env, monkeypatch, capsys):
+    from gaia2_cli import env_rules
+
+    state, home = env
+    (home / "state.json").write_text(json.dumps({"extras": {"capped": True, "n": 1}}))
+    # a call that was handed {} (it started before "capped" was saved) and set only "seen"
+    env_rules._save_extras(home, {"seen": 1}, {})
+    # a call that was handed {"capped": True, "n": 1} and removed "n"
+    env_rules._save_extras(home, {"capped": True, "seen": 1}, {"capped": True, "n": 1, "seen": 1})
+    assert json.loads((home / "state.json").read_text())["extras"] == {"capped": True, "seen": 1}
+
+
 def test_rules_errors_fail_open(env, monkeypatch, capsys):
     state, home = env
     _rules(home, "class _Rules(Rules):\n    def filter_action(self, action, env_state):\n        raise RuntimeError('boom')\n")

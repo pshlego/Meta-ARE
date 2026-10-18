@@ -106,6 +106,14 @@ class EnvState(dict):
         self[name] = value
 
 
+class Extras(dict):
+    """``env_state["extras"]``: always truthy, so ``env_state.get("extras") or {}``
+    still returns (and persists) this dict when it is empty."""
+
+    def __bool__(self) -> bool:
+        return True
+
+
 class Rules:
     """Base class for rules code; override any hook."""
 
@@ -204,16 +212,30 @@ def _next_call_index(home: Path, app: str, subcommand: str, is_help: bool) -> tu
         )
 
 
-def _save_extras(home: Path, extras: Any) -> None:
+def _save_extras(home: Path, extras: Any, snapshot: dict) -> None:
+    """Merge this call's changes to ``extras`` (vs. ``snapshot``, what it was handed).
+
+    The student often runs app calls in parallel; writing the whole dict back
+    would drop keys another call saved in the meantime, so only the keys this
+    call set, changed or removed are applied to the stored dict.
+    """
     if not isinstance(extras, dict):
         return
     try:
-        json.dumps(extras)
+        current = json.loads(json.dumps(extras))
     except (TypeError, ValueError):
         _append(home / "errors.log", "env_state['extras'] is not JSON-serializable; not saved\n")
         return
+    changed = {k: v for k, v in current.items() if k not in snapshot or snapshot[k] != v}
+    removed = [k for k in snapshot if k not in current]
+    if not changed and not removed:
+        return
     with _locked_state(home) as state:
-        state["extras"] = extras
+        stored = state.get("extras") if isinstance(state.get("extras"), dict) else {}
+        stored.update(changed)
+        for key in removed:
+            stored.pop(key, None)
+        state["extras"] = stored
 
 
 @contextlib.contextmanager
@@ -296,6 +318,7 @@ def run_app(app: str, group: Any) -> None:
     try:
         rules = load_rules_class(rules_file.read_text(encoding="utf-8"))()
         app_index, total_index, subcommand_index, extras = _next_call_index(home, app, subcommand, is_help)
+        snapshot = json.loads(json.dumps(extras))
     except Exception:
         _error(home, app, "rules load failed; running unchanged")
         group()
@@ -309,7 +332,7 @@ def run_app(app: str, group: Any) -> None:
         "call_index_app": app_index,
         "call_index_total": total_index,
         "call_index_subcommand": subcommand_index,
-        "extras": extras,
+        "extras": Extras(extras),
     })
     action = Action(
         name=f"{app}.{subcommand}" if subcommand else app,
@@ -325,7 +348,7 @@ def run_app(app: str, group: Any) -> None:
     if isinstance(decision, Blocked) or getattr(decision, "kind", None) == "blocked":
         reason = str(getattr(decision, "reason", "") or "Error: request failed")
         _record(home, app, subcommand, "blocked", argv, reason=reason)
-        _save_extras(home, env_state.get("extras"))
+        _save_extras(home, env_state.get("extras"), snapshot)
         print(reason, file=sys.stderr)
         sys.exit(1)
     exec_argv = _argv_of(decision, argv)
@@ -376,7 +399,7 @@ def run_app(app: str, group: Any) -> None:
     except Exception:
         _error(home, app, "filter_observation raised; showing the unfiltered output")
 
-    _save_extras(home, env_state.get("extras"))
+    _save_extras(home, env_state.get("extras"), snapshot)
     sys.stderr.write(stderr)
     sys.stderr.flush()
     sys.stdout.write(stdout)

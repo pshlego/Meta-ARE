@@ -85,3 +85,36 @@ def test_interventions_attach_by_exact_argv_and_rules_errors_mark_the_trace(tmp_
     assert trace.error is None
     (path / "env_rules_errors.log").write_text("[ts] contacts filter_observation raised; showing the unfiltered output\n")
     assert _convert(path).error.startswith("rules_error: [ts] contacts filter_observation raised")
+
+
+def test_outputs_before_compaction_and_interventions_by_time(tmp_path):
+    # A script runs the app with argv the command text does not show; OpenClaw later
+    # compacts the output and strips "_" from the provider's tool-call id.
+    sd = tmp_path / "scenario_universe_29_y"
+    sd.mkdir()
+    script = "python3 - <<'PY'\nimport subprocess\nfor off in (0, 3):\n    subprocess.run(['chats', 'list-recent-conversations', '--offset', str(off)])\nPY"
+    call = {"id": "call_A1", "type": "function", "function": {"name": "exec", "arguments": json.dumps({"command": script})}}
+    asked = {"role": "assistant", "content": "page through chats", "tool_calls": [{**call, "id": "callA1"}]}
+
+    def entry(created, messages, reply):
+        return {"type": "llm_call", "http_status": 200, "request": {"messages": messages},
+                "raw_response": json.dumps({"created": created, "choices": [{"message": reply}]})}
+
+    user = {"role": "user", "content": "Find my chats."}
+    lines = [
+        entry(100, [user], {"role": "assistant", "content": "page through chats", "tool_calls": [call]}),
+        entry(110, [user, asked, {"role": "tool", "tool_call_id": "callA1", "content": "[{\"id\": 1}]"}],
+              {"role": "assistant", "content": "thinking"}),
+        entry(120, [user, asked, {"role": "tool", "tool_call_id": "callA1",
+                                  "content": "[compacted: tool output removed to free context]"}],
+              {"role": "assistant", "content": "Done."}),
+    ]
+    (sd / "trace.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines))
+    (sd / "result.json").write_text(json.dumps({"success": True, "agent_response": "Done."}))
+    (sd / "env_rules_applied.jsonl").write_text(json.dumps(
+        {"t": 105.5, "app": "chats", "subcommand": "list-recent-conversations", "kind": "blocked",
+         "argv": ["list-recent-conversations", "--offset", "3"], "reason": "Error: busy"}) + "\n")
+    trace = _convert(sd)
+    step = trace.steps[0]
+    assert step.filtered_observation.text.endswith("[{\"id\": 1}]")
+    assert step.blocked_reason == "Error: busy" and "unattributed_interventions" not in step.info

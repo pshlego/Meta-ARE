@@ -44,15 +44,21 @@ Your Rules hooks run on every student call of an app CLI (one process per call):
 
   filter_action(action, env_state) -> Action | Blocked     (A, before execution)
     action.name == "<app>.<subcommand>"; action.kwargs = {argv: [...], subcommand, text}
+    argv = everything after the app name, starting with the subcommand:
+      `calendar get-events --limit 5` -> argv == ["get-events", "--limit", "5"]
     Blocked(reason=...): the app does NOT run; `reason` is printed on stderr and the
       command exits 1 (looks like an app error to the student).
     Return Action(name=action.name, kwargs={**action.kwargs, "argv": [...]}) to run a
-      different argv instead (the app name cannot change).
+      different argv instead. Only kwargs["argv"] decides what runs (to run another
+      subcommand of the same app, put it first in argv); name, subcommand and text are
+      informational, and the app cannot change.
   modify_transition(action, response, env_state) -> EnvResponse   (T, after execution)
-    response.observation.text = the command's stdout
+    response.observation.text = the command's stdout (JSON text for most subcommands;
+      this bridge has no info["result"]: parse the text with json.loads)
     response.info = {exit_code: int, stderr: str, wrote: bool}   # wrote: it changed app state
     Return EnvResponse(observation=Observation(text=...), info={...}) to change what the
       command reports (stdout / stderr / exit_code); the executed effect stays.
+      reward, terminated, truncated and observation.data are ignored.
   filter_observation(obs, env_state) -> Observation                (O)
     obs.text = stdout shown to the student; obs.data = {exit_code, wrote}
 
@@ -64,6 +70,7 @@ env_state (env_state.app or env_state["app"]; read-only except extras):
   call_index_subcommand: int         # 1-based count of real calls of this app+subcommand (0 for probes)
   executed_argv: list[str]           # (T/O only) argv that actually ran
   extras: dict                       # JSON scratch dict persisted across calls (write here)
+Each call is a new process: self attributes do not persist, keep state in extras.
 Only Rules, Action, Blocked, Observation, EnvResponse are pre-bound. Every module you
 use must be imported at the top of rules_code (e.g. `import json` before json.loads),
 and only re, json, random, hashlib, itertools and textwrap may be imported; no file,

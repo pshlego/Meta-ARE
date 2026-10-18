@@ -162,6 +162,59 @@ def app_invocations(command: str) -> list[tuple[str, list[str]]]:
     return calls
 
 
+_COMPACTED = "[compacted"
+
+
+def tool_outputs(scenario_dir: Path) -> dict[str, str]:
+    """Each tool call's output as the agent first saw it.
+
+    OpenClaw later replaces old outputs with "[compacted: tool output removed ...]"
+    in its requests; the step's observation is what the call returned, so the
+    first uncompacted copy across all requests wins.
+    """
+    outputs: dict[str, str] = {}
+    for call in _llm_calls(scenario_dir):
+        if call["http_status"] != 200:
+            continue
+        for m in call["messages"]:
+            if not (isinstance(m, dict) and m.get("role") == "tool" and m.get("tool_call_id")):
+                continue
+            key, text = str(m["tool_call_id"]), _text(m.get("content"))
+            if key not in outputs or (outputs[key].lstrip().startswith(_COMPACTED)
+                                      and not text.lstrip().startswith(_COMPACTED)):
+                outputs[key] = text
+    return outputs
+
+
+def _call_key(tool_call_id: Any) -> str:
+    """OpenClaw drops non-alphanumerics from provider tool-call ids (``call_X`` -> ``callX``)."""
+    return re.sub(r"[^A-Za-z0-9]", "", str(tool_call_id))
+
+
+def tool_call_windows(scenario_dir: Path) -> dict[str, tuple[float, float]]:
+    """``_call_key(tool_call_id) -> [start, end)`` wall-clock window in which the call ran.
+
+    A response's tool calls run after it arrives and before the next request,
+    i.e. between this response's ``created`` and the next one's (provider
+    epoch seconds; the env-rules log uses the same wall clock).
+    """
+    starts: list[tuple[float, list[str]]] = []
+    for call in _llm_calls(scenario_dir):
+        created = call["response"].get("created")
+        if call["http_status"] != 200 or not isinstance(created, (int, float)):
+            continue
+        choices = call["response"].get("choices")
+        message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+        ids = [_call_key(tc.get("id")) for tc in (message or {}).get("tool_calls") or [] if isinstance(tc, dict)]
+        starts.append((float(created), ids))
+    windows: dict[str, tuple[float, float]] = {}
+    for i, (start, ids) in enumerate(starts):
+        end = starts[i + 1][0] if i + 1 < len(starts) else float("inf")
+        for key in ids:
+            windows[key] = (start, end)
+    return windows
+
+
 def _applied(scenario_dir: Path) -> list[dict[str, Any]]:
     text = _read_text(scenario_dir, "env_rules_applied.jsonl") or ""
     entries = []
@@ -185,8 +238,10 @@ def convert(
     """Build a Trace whose Steps are the agent's ``exec`` calls plus its final reply.
 
     Env-rules interventions are attached to the step whose command ran the
-    same app with the same argv (first unconsumed match); a blocked call sets
-    ``blocked_reason`` as in envharness ``Rules``. Errors raised by rules code
+    same app with the same argv (first unconsumed match), else to the step of
+    that app that ran when the intervention was logged; a blocked call sets
+    ``blocked_reason`` as in envharness ``Rules``. Observations are the outputs
+    as first returned (before OpenClaw compacts them). Errors raised by rules code
     (fail-open in the container) make the rollout an error trace, as a hook
     exception does in the original runner.
     """
@@ -194,50 +249,66 @@ def convert(
     result = json.loads(_read_text(scenario_dir, "result.json") or "{}")
     messages = conversation(scenario_dir)
     pending = [e for e in _applied(scenario_dir) if isinstance(e, dict)]
-    outputs: dict[str, str] = {
-        str(m.get("tool_call_id")): _text(m.get("content"))
-        for m in messages
-        if m.get("role") == "tool" and m.get("tool_call_id")
-    }
+    outputs = tool_outputs(scenario_dir)
     task_text = user_request(next((_text(m.get("content")) for m in messages if m.get("role") == "user"), ""))
     base_info = {"scenario_id": scenario_dir.name, "capability": capability}
 
-    steps: list[Step] = []
+    calls: list[tuple[str, str, str]] = []  # (tool_call_id, command, reasoning)
     for message in messages:
         if message.get("role") != "assistant":
             continue
         reasoning = _text(message.get("content"))
         for tool_call in message.get("tool_calls") or []:
-            if not isinstance(tool_call, dict):
+            if isinstance(tool_call, dict):
+                calls.append((str(tool_call.get("id")), _exec_command(tool_call), reasoning))
+
+    # Interventions -> steps: the app call whose argv matches the command text; calls
+    # whose argv the text does not show (shell loops, variables, scripts) by time window.
+    attached: list[list[dict[str, Any]]] = [[] for _ in calls]
+    for idx, (_, command, _) in enumerate(calls):
+        for app, argv in app_invocations(command):
+            match = next((e for e in pending if e.get("app") == app and e.get("argv") == argv), None)
+            if match is not None:
+                pending.remove(match)
+                attached[idx].append(match)
+    if pending:
+        windows = tool_call_windows(scenario_dir)
+        for entry in list(pending):
+            t = entry.get("t")
+            if not isinstance(t, (int, float)):
                 continue
-            command = _exec_command(tool_call)
-            output = outputs.get(str(tool_call.get("id")), "")[:_MAX_OUTPUT_CHARS]
-            action = Action(name="exec", kwargs={"command": command, "text": command})
-            interventions = []
-            for app, argv in app_invocations(command):
-                match = next((e for e in pending if e.get("app") == app and e.get("argv") == argv), None)
-                if match is not None:
-                    pending.remove(match)
-                    interventions.append(match)
-            blocked = next((e for e in interventions if e.get("kind") == "blocked"), None)
-            blocked_reason = str(blocked.get("reason") or "blocked") if blocked else None
-            info = dict(base_info)
-            if interventions:
-                info["interventions"] = [
-                    {k: v for k, v in e.items() if k in ("app", "subcommand", "kind", "wrote", "exit_code", "new_argv")}
-                    for e in interventions
-                ]
-            steps.append(
-                Step(
-                    raw_action=action,
-                    filtered_action=None if blocked_reason else action,
-                    blocked_reason=blocked_reason,
-                    raw_observation=Observation(text=output),
-                    filtered_observation=Observation(text=output),
-                    policy_raw_response=reasoning[:_MAX_OUTPUT_CHARS] or None,
-                    info=info,
-                )
+            app, sub = str(entry.get("app")), str(entry.get("subcommand") or "")
+            in_window = [i for i, (key, command, _) in enumerate(calls)
+                         if _call_key(key) in windows and windows[_call_key(key)][0] <= t < windows[_call_key(key)][1]
+                         and app in {name for name, _ in app_invocations(command)} | set(re.findall(r"[a-z-]+", command))]
+            best = [i for i in in_window if sub and sub in calls[i][1]] or in_window
+            if best:
+                pending.remove(entry)
+                attached[best[0]].append(entry)
+
+    steps: list[Step] = []
+    for (key, command, reasoning), interventions in zip(calls, attached):
+        output = outputs.get(key, "")[:_MAX_OUTPUT_CHARS]
+        action = Action(name="exec", kwargs={"command": command, "text": command})
+        blocked = next((e for e in interventions if e.get("kind") == "blocked"), None)
+        blocked_reason = str(blocked.get("reason") or "blocked") if blocked else None
+        info = dict(base_info)
+        if interventions:
+            info["interventions"] = [
+                {k: v for k, v in e.items() if k in ("app", "subcommand", "kind", "wrote", "exit_code", "new_argv")}
+                for e in interventions
+            ]
+        steps.append(
+            Step(
+                raw_action=action,
+                filtered_action=None if blocked_reason else action,
+                blocked_reason=blocked_reason,
+                raw_observation=Observation(text=output),
+                filtered_observation=Observation(text=output),
+                policy_raw_response=reasoning[:_MAX_OUTPUT_CHARS] or None,
+                info=info,
             )
+        )
     final_reply = str(result.get("agent_response") or "")
     if final_reply or not steps:
         # The student's final answer is its last action (cf. OfficeQA's answer()).
