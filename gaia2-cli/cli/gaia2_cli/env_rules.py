@@ -191,51 +191,40 @@ def _error(home: Path, app: str, context: str) -> None:
     )
 
 
-def _next_call_index(home: Path, app: str, subcommand: str, is_help: bool) -> tuple[int, int, int, dict]:
-    """Increment and return (per-app, total, per-subcommand) call counters (1-based) and ``extras``.
+def _next_call_index(state: dict, app: str, subcommand: str, is_help: bool) -> tuple[int, int, int]:
+    """Increment and return (per-app, total, per-subcommand) call counters (1-based).
 
     Help/schema probes count toward the app and total counters but not toward
     the per-subcommand counter (0 for them), so rules can target "the first
     real call of X" even when the agent explores with ``--help`` first.
     """
-    with _locked_state(home) as state:
-        per_app = state.setdefault("per_app", {})
-        per_app[app] = int(per_app.get(app, 0)) + 1
-        state["total"] = int(state.get("total", 0)) + 1
-        per_sub = state.setdefault("per_subcommand", {})
-        key = f"{app}.{subcommand}"
-        if not is_help:
-            per_sub[key] = int(per_sub.get(key, 0)) + 1
-        extras = state.get("extras")
-        return per_app[app], state["total"], (0 if is_help else per_sub[key]), (
-            dict(extras) if isinstance(extras, dict) else {}
-        )
+    per_app = state.setdefault("per_app", {})
+    per_app[app] = int(per_app.get(app, 0)) + 1
+    state["total"] = int(state.get("total", 0)) + 1
+    per_sub = state.setdefault("per_subcommand", {})
+    key = f"{app}.{subcommand}"
+    if not is_help:
+        per_sub[key] = int(per_sub.get(key, 0)) + 1
+    return per_app[app], state["total"], (0 if is_help else per_sub[key])
 
 
-def _save_extras(home: Path, extras: Any, snapshot: dict) -> None:
-    """Merge this call's changes to ``extras`` (vs. ``snapshot``, what it was handed).
+@contextlib.contextmanager
+def _hook_phase(home: Path, env_state: "EnvState"):
+    """Run hooks with ``extras`` read, changed and stored under the state lock.
 
-    The student often runs app calls in parallel; writing the whole dict back
-    would drop keys another call saved in the meantime, so only the keys this
-    call set, changed or removed are applied to the stored dict.
+    The student often runs app calls in parallel; holding the lock from reading
+    ``extras`` to storing it makes each hook phase see every earlier call's
+    changes, as in the original's sequential episode (counters, one-shots).
+    The app itself runs outside the lock.
     """
-    if not isinstance(extras, dict):
-        return
-    try:
-        current = json.loads(json.dumps(extras))
-    except (TypeError, ValueError):
-        _append(home / "errors.log", "env_state['extras'] is not JSON-serializable; not saved\n")
-        return
-    changed = {k: v for k, v in current.items() if k not in snapshot or snapshot[k] != v}
-    removed = [k for k in snapshot if k not in current]
-    if not changed and not removed:
-        return
     with _locked_state(home) as state:
-        stored = state.get("extras") if isinstance(state.get("extras"), dict) else {}
-        stored.update(changed)
-        for key in removed:
-            stored.pop(key, None)
-        state["extras"] = stored
+        stored = state.get("extras")
+        env_state["extras"] = Extras(stored if isinstance(stored, dict) else {})
+        yield state
+        try:
+            state["extras"] = json.loads(json.dumps(env_state.get("extras")))
+        except (TypeError, ValueError):
+            _append(home / "errors.log", "env_state['extras'] is not JSON-serializable; not saved\n")
 
 
 @contextlib.contextmanager
@@ -263,13 +252,10 @@ def _is_help(argv: list[str], subcommand: str) -> bool:
 
 
 def _write_count() -> int:
-    from gaia2_cli.shared import events_file
+    """Writes this process logged so far; concurrent calls' writes in events.jsonl do not count."""
+    from gaia2_cli import shared
 
-    try:
-        with open(events_file(), encoding="utf-8") as handle:
-            return sum(1 for line in handle if '"w": true' in line)
-    except (OSError, RuntimeError):
-        return 0
+    return shared.writes_logged
 
 
 def _invoke(group: Any, app: str, argv: list[str]) -> int:
@@ -317,38 +303,30 @@ def run_app(app: str, group: Any) -> None:
     is_help = _is_help(argv, subcommand)
     try:
         rules = load_rules_class(rules_file.read_text(encoding="utf-8"))()
-        app_index, total_index, subcommand_index, extras = _next_call_index(home, app, subcommand, is_help)
-        snapshot = json.loads(json.dumps(extras))
     except Exception:
         _error(home, app, "rules load failed; running unchanged")
         group()
         return
 
-    env_state = EnvState({
-        "app": app,
-        "subcommand": subcommand,
-        "argv": list(argv),
-        "is_help": is_help,
-        "call_index_app": app_index,
-        "call_index_total": total_index,
-        "call_index_subcommand": subcommand_index,
-        "extras": Extras(extras),
-    })
+    env_state = EnvState({"app": app, "subcommand": subcommand, "argv": list(argv), "is_help": is_help})
     action = Action(
         name=f"{app}.{subcommand}" if subcommand else app,
         kwargs={"argv": list(argv), "subcommand": subcommand, "text": shlex.join([app, *argv])},
     )
 
     # A: transform or reject before execution.
-    try:
-        decision = rules.filter_action(action, env_state)
-    except Exception:
-        _error(home, app, "filter_action raised; running unchanged")
-        decision = action
+    with _hook_phase(home, env_state) as state:
+        app_index, total_index, subcommand_index = _next_call_index(state, app, subcommand, is_help)
+        env_state.update(call_index_app=app_index, call_index_total=total_index,
+                         call_index_subcommand=subcommand_index)
+        try:
+            decision = rules.filter_action(action, env_state)
+        except Exception:
+            _error(home, app, "filter_action raised; running unchanged")
+            decision = action
     if isinstance(decision, Blocked) or getattr(decision, "kind", None) == "blocked":
         reason = str(getattr(decision, "reason", "") or "Error: request failed")
         _record(home, app, subcommand, "blocked", argv, reason=reason)
-        _save_extras(home, env_state.get("extras"), snapshot)
         print(reason, file=sys.stderr)
         sys.exit(1)
     exec_argv = _argv_of(decision, argv)
@@ -369,6 +347,24 @@ def run_app(app: str, group: Any) -> None:
         observation=Observation(text=stdout, data={"exit_code": code, "wrote": wrote}),
         info={"exit_code": code, "stderr": stderr, "wrote": wrote},
     )
+    with _hook_phase(home, env_state):
+        stdout, code, stderr = _transition_and_observation(
+            home, rules, app, subcommand, argv, executed, response, env_state, wrote)
+
+    if stderr and not stderr.endswith("\n"):
+        stderr += "\n"  # a CLI's messages end with a newline; keep stdout on its own line
+    sys.stderr.write(stderr)
+    sys.stderr.flush()
+    sys.stdout.write(stdout)
+    sys.stdout.flush()
+    sys.exit(code)
+
+
+def _transition_and_observation(home: Path, rules: Rules, app: str, subcommand: str, argv: list[str],
+                                executed: Action, response: EnvResponse, env_state: "EnvState",
+                                wrote: bool) -> tuple[str, int, str]:
+    """T then O on an executed command; returns the (stdout, exit code, stderr) the agent gets."""
+    stdout, code, stderr = response.observation.text, response.info["exit_code"], response.info["stderr"]
     try:
         transformed = rules.modify_transition(executed, response, env_state)
         info = getattr(transformed, "info", None) or {}
@@ -398,13 +394,7 @@ def run_app(app: str, group: Any) -> None:
             stdout = text
     except Exception:
         _error(home, app, "filter_observation raised; showing the unfiltered output")
-
-    _save_extras(home, env_state.get("extras"), snapshot)
-    sys.stderr.write(stderr)
-    sys.stderr.flush()
-    sys.stdout.write(stdout)
-    sys.stdout.flush()
-    sys.exit(code)
+    return stdout, code, stderr
 
 
 def _entry(app: str, module: str):

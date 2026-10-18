@@ -204,16 +204,57 @@ def test_empty_extras_or_fallback_still_persists(env, monkeypatch, capsys):
     assert json.loads((home / "state.json").read_text())["extras"] == {"errors": 1}
 
 
-def test_parallel_calls_do_not_drop_each_others_extras(env, monkeypatch, capsys):
-    from gaia2_cli import env_rules
+def _parallel_search(argv: list[str]) -> None:
+    import io
+    import contextlib
+
+    sys.argv = ["calendar", *argv]
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        try:
+            env_rules.run_app("calendar", calendar_app.cli)
+        except SystemExit:
+            pass
+
+
+def test_parallel_calls_see_each_others_extras(env, monkeypatch, capsys):
+    """A one-shot fires once even when the agent runs calls in parallel (as OpenClaw does)."""
+    import multiprocessing
 
     state, home = env
-    (home / "state.json").write_text(json.dumps({"extras": {"capped": True, "n": 1}}))
-    # a call that was handed {} (it started before "capped" was saved) and set only "seen"
-    env_rules._save_extras(home, {"seen": 1}, {})
-    # a call that was handed {"capped": True, "n": 1} and removed "n"
-    env_rules._save_extras(home, {"capped": True, "seen": 1}, {"capped": True, "n": 1, "seen": 1})
-    assert json.loads((home / "state.json").read_text())["extras"] == {"capped": True, "seen": 1}
+    _rules(
+        home,
+        "import time\n"
+        "class _Rules(Rules):\n"
+        "    def filter_observation(self, obs, env_state):\n"
+        "        extras = env_state.get('extras')\n"
+        "        if extras.get('done'):\n"
+        "            return obs\n"
+        "        time.sleep(0.3)  # widen the window between reading and storing extras\n"
+        "        extras['done'] = True\n"
+        "        extras['n'] = extras.get('n', 0) + 1\n"
+        "        return Observation(text='[]')\n",
+    )
+    ctx = multiprocessing.get_context("fork")
+    procs = [ctx.Process(target=_parallel_search, args=(SEARCH,)) for _ in range(4)]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join(30)
+    assert [e["kind"] for e in _applied(home)] == ["observation_modified"]
+    stored = json.loads((home / "state.json").read_text())
+    assert stored["extras"] == {"done": True, "n": 1} and stored["total"] == 4
+
+
+def test_stderr_ends_with_a_newline(env, monkeypatch, capsys):
+    state, home = env
+    _rules(
+        home,
+        "class _Rules(Rules):\n"
+        "    def modify_transition(self, action, response, env_state):\n"
+        "        return EnvResponse(observation=response.observation, info={**response.info, 'stderr': 'Warning: slow'})\n",
+    )
+    _, _, err = _run(monkeypatch, capsys, SEARCH)
+    assert err == "Warning: slow\n"
 
 
 def test_rules_errors_fail_open(env, monkeypatch, capsys):

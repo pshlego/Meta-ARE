@@ -240,6 +240,10 @@ def _release_lock(path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Writes this process logged (env_rules tells a call's own writes from concurrent calls').
+writes_logged = 0
+
+
 def log_action(fn: str, args: dict, ret: Any = None, write: bool = False) -> None:
     """Log a successful action to events.jsonl (minimal format).
 
@@ -276,6 +280,9 @@ def log_action(fn: str, args: dict, ret: Any = None, write: bool = False) -> Non
     except FileNotFoundError:
         pass
     line = json.dumps(entry) + "\n"
+    if write:
+        global writes_logged
+        writes_logged += 1
     ef = events_file()
     lock_path = ef.with_suffix(".lock")
     with open(lock_path, "w") as lock_fd:
