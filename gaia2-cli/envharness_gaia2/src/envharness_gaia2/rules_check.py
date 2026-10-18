@@ -12,6 +12,7 @@ envharness's ``RulesCodeError``: the K rollouts become error traces.
 from __future__ import annotations
 
 import ast
+import builtins
 import re
 import shlex
 from collections.abc import Iterable, Sequence
@@ -39,6 +40,7 @@ def split_command(command: str) -> list[str]:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()")
     lexer.whitespace_split = True
     return list(lexer)
+PRE_BOUND = frozenset({"Rules", "Action", "Blocked", "Observation", "EnvResponse", "getattr", "hasattr"})
 _SCENARIO_ID = re.compile(r"scenario_universe_\d+_[0-9a-z]+")
 
 
@@ -87,6 +89,42 @@ def check_rules_code(code: str, *, forbidden_ids: Iterable[str] = ()) -> None:
             raise RulesCheckError(f"rules_code may not access dunder attribute `{node.attr}`")
         elif isinstance(node, ast.Name) and node.id in FORBIDDEN_MODULE_ROOTS:
             raise RulesCheckError(f"rules_code may not reference `{node.id}`")
+
+    undefined = _undefined_names(tree)
+    if undefined:
+        name = undefined[0]
+        hint = f"add `import {name}` at the top of rules_code" if name in ALLOWED_IMPORTS else "define it first"
+        raise RulesCheckError(
+            f"rules_code uses `{name}` but never defines or imports it (NameError at run time; only "
+            f"{sorted(PRE_BOUND - {'getattr', 'hasattr'})} are pre-bound): {hint}"
+        )
+
+
+def _undefined_names(tree: ast.AST) -> list[str]:
+    """Names read anywhere but bound nowhere in the module (a NameError when the line runs).
+
+    Module-wide and scope-blind on purpose: it only flags names that no statement
+    binds, e.g. ``json.loads`` without ``import json``, which a hook's own
+    ``try/except`` would otherwise turn into a silent no-op.
+    """
+    bound = set(PRE_BOUND) | set(dir(builtins))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bound.add(node.id)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bound.add(node.rest)
+    return sorted({node.id for node in ast.walk(tree)
+                   if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in bound})
 
 
 def setup_commands(actions: Sequence[Action], *, forbidden_ids: Iterable[str] = ()) -> list[str]:

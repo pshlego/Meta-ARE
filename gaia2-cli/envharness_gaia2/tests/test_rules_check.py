@@ -38,6 +38,9 @@ class _Rules(Rules):
         ("class _Rules(Rules):\n    def filter_action(self, a, s):\n        return a.__class__\n", "dunder"),
         (GOOD.replace("contacts", "scenario_universe_29_abc"), "scenario identifiers"),
         ("x" * 9000, "larger"),
+        # json.loads without `import json`: the hook's own try/except would swallow the NameError
+        (GOOD.replace("import json\n", "").replace("except ValueError", "except Exception"), "add `import json`"),
+        ("class _Rules(Rules):\n    def filter_action(self, a, s):\n        return helper(a)\n", "`helper`"),
     ],
 )
 def test_rules_check_rejects(code, message):
@@ -45,6 +48,16 @@ def test_rules_check_rejects(code, message):
         check_rules_code(code)
     if message:
         assert message in str(exc.value)
+
+
+def test_undefined_name_check_accepts_locally_bound_names():
+    check_rules_code(
+        "import re\n\nclass _Rules(Rules):\n"
+        "    def filter_action(self, action, env_state):\n"
+        "        argv = [t for t in action.kwargs.get('argv', []) if (m := re.match(r'--', t)) or t]\n"
+        "        try:\n            n = int(argv[0])\n        except Exception as exc:\n            n = len(str(exc))\n"
+        "        return action if n or Blocked else Action(name=action.name, kwargs={**action.kwargs})\n"
+    )
 
 
 def test_rules_check_accepts_contract_and_matches_container_loader():
