@@ -7,8 +7,8 @@ Mirrors an envharness ``experiments/<bench>/reproduce.py``:
 * Stage 1 (corpus): the original Orchestrator, one run per train task
   (``run_harness.py --n-tasks 1``), baseline K -> propose -> K rollouts ->
   decide up to ``max_k``.
-* Stage 2 (banks): ``ours`` from the round's traces (SWE-bench cascade build),
-  ``orig`` from round 1's baseline traces (intra-baseline build).
+* Stage 2 (banks): ``ours`` from the round's traces (``bank.mode``: SWE-bench cascade or ALFWorld pair build),
+  ``orig`` from round 1's baseline traces (intra-baseline or ALFWorld baseline-pair build).
 * Stage 3 (eval): nobank / orig / ours_r<r> on the held-out manifest, one
   attempt per instance; banks are rendered whole into OpenClaw ``skills/``.
 
@@ -36,7 +36,9 @@ from envharness.orchestration.runner import EnvSpec, PolicySpec
 from envharness.orchestration.storage import TraceStore
 
 from envharness_gaia2 import PROMPTS_DIR
-from envharness_gaia2.bank import build, dedup_by_title, load_bank, openai_embedder, plan_ours, plan_orig, save_bank
+from envharness_gaia2.bank import (
+    build, dedup_by_title, load_bank, openai_embedder, plan_orig, plan_ours, plan_pairs, save_bank,
+)
 from envharness_gaia2.config import Config, load_config
 from envharness_gaia2.designer import Gaia2HarnessAgent, make_client
 from envharness_gaia2.evaluate import evaluate
@@ -123,11 +125,15 @@ class Pipeline:
         input_digest = harness_digest(self.cfg, harness)
         traces_by_task = self.corpus(round_no, round_dir / "corpus", harness)
 
+        bank_cfg = self.cfg.bank
+        if bank_cfg.mode == "alfworld_pair":
+            ours_plan, ours_condition = plan_pairs(traces_by_task, condition="ours"), "ours"
+        else:
+            ours_plan, ours_condition = plan_ours(traces_by_task, max_pairs_per_task=bank_cfg.max_pairs_per_task,
+                                                  max_baseline_rollouts=bank_cfg.max_baseline_rollouts,
+                                                  tier2_last_only=bank_cfg.tier2_last_only), "cascade"
         new, ours_stats = build(
-            plan_ours(traces_by_task, max_pairs_per_task=self.cfg.bank.max_pairs_per_task,
-                      max_baseline_rollouts=self.cfg.bank.max_baseline_rollouts,
-                      tier2_last_only=self.cfg.bank.tier2_last_only),
-            self.induce_client, self.embed, condition="cascade",
+            ours_plan, self.induce_client, self.embed, condition=ours_condition,
             existing_titles=[item.title for item in prior_bank], concurrency=self.cfg.bank.concurrency,
             dedup_titles=self.cfg.bank.dedup_titles,
         )
@@ -136,9 +142,12 @@ class Pipeline:
         save_bank(self.run_dir / "banks" / f"ours_r{round_no}.jsonl", bank)
         stats = {"ours": ours_stats}
         if round_no == 1:
-            orig, orig_stats = build(plan_orig(traces_by_task, seed=self.cfg.bank.orig_seed), self.induce_client,
-                                     self.embed, condition="intra_baseline", concurrency=self.cfg.bank.concurrency,
-                                     dedup_titles=self.cfg.bank.dedup_titles)
+            if bank_cfg.mode == "alfworld_pair":
+                orig_plan, orig_condition = plan_pairs(traces_by_task, condition="orig"), "orig"
+            else:
+                orig_plan, orig_condition = plan_orig(traces_by_task, seed=bank_cfg.orig_seed), "intra_baseline"
+            orig, orig_stats = build(orig_plan, self.induce_client, self.embed, condition=orig_condition,
+                                     concurrency=bank_cfg.concurrency, dedup_titles=bank_cfg.dedup_titles)
             save_bank(self.run_dir / "banks" / "orig.jsonl", orig)
             stats["orig"] = orig_stats
         (round_dir / "bank_build.json").write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")

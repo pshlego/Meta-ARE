@@ -1,4 +1,6 @@
-"""Skill-bank build: a port of envharness ``experiments/swebench/bank_distillation``.
+"""Skill-bank builds: ports of the envharness Stage-2 bank builders (``bank.mode``).
+
+``swebench_cascade`` -- ``experiments/swebench/bank_distillation``:
 
 * ``ours`` = ``build_ours_bank.py --pair-mode cascade``: per task, baseline
   failures x the cascade's successes (Tier 1 accepted, Tier 2 last
@@ -11,7 +13,17 @@
 * Both distil with the paired-diff atomic prompt (``induce.py``), threading the
   designer's diagnosis, embed ``title: description`` and dedup by title.
 
-Only the trajectory rendering and the prompt's domain wording are GAIA2
+``alfworld_pair`` -- ``scripts/induce_pair.py`` (ALFWorld):
+
+* ``orig`` = the task's baseline rollouts; ``ours`` = its accepted rollouts when
+  a candidate was accepted, else the baseline rollouts (cascade fallback).
+* Per task one pair: the shortest success and the longest failure. Both ->
+  ``induce_paired_diff`` (same environment); one of them -> ReasoningBank's
+  SUCCESSFUL_SI / FAILED_SI single-trajectory induction.
+* Co-evolution keeps the SWE-bench augment mode (existing titles in the prompt)
+  and title dedup on top.
+
+Only the trajectory rendering and the prompts' domain wording are GAIA2
 specific. Traces are handled as dicts (``Trace.model_dump``), like the original
 scripts read them from ``traces.jsonl``.
 """
@@ -30,10 +42,12 @@ from pathlib import Path
 
 from envharness.infra.llm import LLMClient, Message
 from envharness.reasoning_bank.bank import MemoryItem
-from envharness.reasoning_bank.induce import parse_memory_items
+from envharness.reasoning_bank.induce import PAIRED_DIFF_SI, parse_memory_items
+from envharness.third_party.reasoning_bank.prompts import FAILED_SI, SUCCESSFUL_SI
 
 from envharness_gaia2 import PROMPTS_DIR
 
+BANK_MODES = ("swebench_cascade", "alfworld_pair")
 TIER_LABELS = ("1_accepted", "2_exploration_last", "3_baseline_fallback", "skip_no_base_fail", "skip_no_succ")
 
 
@@ -147,7 +161,7 @@ class PairWork:
 
 @dataclass
 class BankPlan:
-    work: list[PairWork] = field(default_factory=list)
+    work: list[PairWork | PickWork] = field(default_factory=list)
     rows: list[dict] = field(default_factory=list)
 
 
@@ -251,6 +265,19 @@ def format_trajectory(steps: list[dict], max_cmd_chars: int = 250, max_obs_chars
 
 
 # -- distillation (induce_paired_diff_atomic) -----------------------------------------
+def existing_lessons_block(titles: Sequence[str] | None) -> str:
+    """The augment mode's (``--existing-bank``) prompt block."""
+    if not titles:
+        return ""
+    existing_str = "\n".join(f"- {t}" for t in titles)
+    return (
+        "\n\n## EXISTING LESSONS (from prior rounds) — DO NOT RE-EMIT THESE\n"
+        "The following lessons are ALREADY in the bank. Emit ONLY techniques "
+        "NOT covered by these. If the trajectory difference is fully captured "
+        f"by an existing lesson, emit NOTHING.\n{existing_str}\n"
+    )
+
+
 def induce_paired_diff_atomic(
     client: LLMClient,
     *,
@@ -267,15 +294,7 @@ def induce_paired_diff_atomic(
     summary = (mutation_rationale or "unspecified").strip()[:400]
     system = (PROMPTS_DIR / "induce_paired_diff_atomic.md").read_text(encoding="utf-8")
     system = system.replace("{failure_label}", label).replace("{mutation_summary}", summary).strip()
-    existing = ""
-    if existing_lesson_titles:
-        existing_str = "\n".join(f"- {t}" for t in existing_lesson_titles)
-        existing = (
-            "\n\n## EXISTING LESSONS (from prior rounds) — DO NOT RE-EMIT THESE\n"
-            "The following lessons are ALREADY in the bank. Emit ONLY techniques "
-            "NOT covered by these. If the trajectory difference is fully captured "
-            f"by an existing lesson, emit NOTHING.\n{existing_str}\n"
-        )
+    existing = existing_lessons_block(existing_lesson_titles)
     user = (
         f"User request:\n{task_text[:3000]}\n\n"
         f"BASELINE trajectory (FAILED, env unmutated):\n{baseline_trajectory_text[:7000]}\n\n"
@@ -354,6 +373,121 @@ def _induce_pair(work: PairWork, client: LLMClient, embed, condition: str, exist
     ]
 
 
+# -- alfworld_pair: scripts/induce_pair.py -------------------------------------------
+_ALFWORLD_DOMAIN = "a text-based household environment (ALFWorld)"
+GAIA2_DOMAIN = ("a GAIA2 personal-assistant environment (calendar, contacts, emails, messages, chats, "
+                "rent-a-flat, city, cabs, shopping and cloud-drive, operated through app CLI commands)")
+
+
+def _gaia2_si(si: str) -> str:
+    """ReasoningBank prompt with only the domain words changed, as the original adapts it."""
+    if _ALFWORLD_DOMAIN not in si:
+        raise ValueError("ReasoningBank prompt no longer names the ALFWorld domain")
+    return si.replace(_ALFWORLD_DOMAIN, GAIA2_DOMAIN)
+
+
+@dataclass
+class PickWork:
+    task_key: str
+    tier: str  # "baseline" (orig), "accepted" or "baseline_fallback" (ours)
+    succ: dict | None
+    fail: dict | None
+    task_text: str
+
+    @property
+    def induction(self) -> str:
+        if self.succ and self.fail:
+            return "paired_diff"
+        return "single_succ" if self.succ else "single_fail"
+
+
+def pick_pair(rollouts: list[dict]) -> tuple[dict | None, dict | None]:
+    """``induce_pair._pick_pair``: shortest success, longest failure."""
+    succ = [r for r in rollouts if r.get("success") and r.get("steps")]
+    fail = [r for r in rollouts if not r.get("success") and r.get("steps")]
+    succ.sort(key=lambda r: len(r["steps"]))
+    fail.sort(key=lambda r: -len(r["steps"]))
+    return (succ[0] if succ else None), (fail[0] if fail else None)
+
+
+def plan_pairs(traces_by_task: dict[str, list[dict]], *, condition: str) -> BankPlan:
+    """``induce_pair.main``: orig from baseline rollouts; ours from accepted ones, else baseline."""
+    if condition not in ("orig", "ours"):
+        raise ValueError(f"unknown condition: {condition}")
+    plan = BankPlan()
+    for key, traces in sorted(traces_by_task.items()):
+        baseline = [t for t in traces if t.get("kind") == "baseline"]
+        accepted = [t for t in traces if t.get("kind") == "accepted"]
+        if condition == "orig":
+            rollouts, tier = baseline, "baseline"
+        elif accepted:
+            rollouts, tier = accepted, "accepted"
+        else:
+            rollouts, tier = baseline, "baseline_fallback"
+        succ, fail = pick_pair(rollouts)
+        if not succ and not fail:
+            plan.rows.append({"task": key, "tier": "skip_no_steps", "pairs": 0})
+            continue
+        work = PickWork(key, tier, succ, fail, task_text_of(traces))
+        plan.rows.append({"task": key, "tier": tier, "induction": work.induction, "pairs": 1})
+        plan.work.append(work)
+    return plan
+
+
+def induce_pick(client: LLMClient, work: PickWork, *, existing_lesson_titles: Sequence[str] | None = None,
+                max_items: int = 3, retries: int = 4) -> list[dict]:
+    """``induce_pair._items_for_task``: paired-diff when both exist, else single-trajectory induction."""
+    existing = existing_lessons_block(existing_lesson_titles)
+    if work.succ and work.fail:
+        system = PAIRED_DIFF_SI
+        user = (
+            f"Task: {work.task_text[:2000]}\n\n"
+            f"FAILURE trajectory:\n{format_trajectory(work.fail.get('steps') or [])[:7000]}\n\n"
+            f"SUCCESS trajectory:\n{format_trajectory(work.succ.get('steps') or [])[:7000]}\n"
+            f"{existing}"
+            "\nCompare. Extract atomic skills. If no clean difference, emit NOTHING."
+        )
+    else:
+        trace = work.succ or work.fail
+        system = _gaia2_si(SUCCESSFUL_SI if work.succ else FAILED_SI)
+        user = f"User query: {work.task_text}\n\nTrajectory:\n{format_trajectory(trace.get('steps') or [])}{existing}"
+    for attempt in range(retries):
+        try:
+            response = client.chat(
+                [Message(role="system", content=system), Message(role="user", content=user)], temperature=0.0
+            )
+            return parse_memory_items(response.content or "")[:max_items]
+        except Exception as exc:  # noqa: BLE001 - mirrors the original's retry-then-empty policy
+            if attempt == retries - 1:
+                print(f"[bank] induction failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                return []
+            time.sleep(2**attempt)
+    return []
+
+
+def _induce_pick(work: PickWork, client: LLMClient, embed, condition: str, existing_titles) -> list[MemoryItem]:
+    items = induce_pick(client, work, existing_lesson_titles=existing_titles)
+    if not items:
+        return []
+    try:
+        embeddings = embed([f"## {it['title']}\n{it['description']}\n{it['content']}" for it in items])
+    except Exception as exc:  # noqa: BLE001
+        print(f"[bank] embedding failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return []
+    return [
+        MemoryItem(
+            title=it["title"], description=it["description"], content=it["content"], embedding=emb,
+            source={
+                "task": work.task_key, "condition": condition, "tier": work.tier, "induction": work.induction,
+                "succ_episode_id": (work.succ or {}).get("episode_id", ""),
+                "fail_episode_id": (work.fail or {}).get("episode_id", ""),
+                "succ_candidate_id": _cand_id(work.succ) if work.succ and work.succ.get("kind") != "baseline" else None,
+            },
+        )
+        for it, emb in zip(items, embeddings)
+    ]
+
+
 def dedup_by_title(items: list[MemoryItem]) -> list[MemoryItem]:
     seen: set[str] = set()
     out = []
@@ -372,7 +506,8 @@ def build(plan: BankPlan, client: LLMClient, embed, *, condition: str, existing_
     items: list[MemoryItem] = []
     empty = 0
     with cf.ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-        futures = [pool.submit(_induce_pair, w, client, embed, condition, list(existing_titles)) for w in plan.work]
+        futures = [pool.submit(_induce_pick if isinstance(w, PickWork) else _induce_pair, w, client, embed, condition,
+                               list(existing_titles)) for w in plan.work]
         for future in futures:  # submission order keeps the bank deterministic
             got = future.result()
             empty += not got

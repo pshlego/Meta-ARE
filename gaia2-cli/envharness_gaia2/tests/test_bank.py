@@ -10,8 +10,10 @@ from envharness_gaia2.bank import (
     categorize_with_cascade,
     format_trajectory,
     induce_paired_diff_atomic,
+    induce_pick,
     plan_orig,
     plan_ours,
+    plan_pairs,
 )
 from envharness_gaia2.skills import SkillRenderError, render
 
@@ -57,6 +59,53 @@ def test_pair_caps_and_orig_balance():
     # cap = min(n_cascade=3*3, n_intra=3*1) -> 3 intra-baseline pairs
     assert len(orig.work) == 3 and {w.succ["episode_id"] for w in orig.work} == {"s0"}
     assert orig.rows[0]["cap"] == 3
+
+
+def _long(trace: dict, n: int) -> dict:
+    trace["steps"] = trace["steps"] * n
+    return trace
+
+
+def test_alfworld_pair_selection():
+    # hardening accept (baseline 3/3 succeeds): ours pairs the accepted rollouts, orig the baseline ones
+    hard = [*[_trace("baseline", True, eid=f"b{i}") for i in range(3)],
+            _long(_trace("accepted", True, rules=RULES, eid="a-long"), 3), _trace("accepted", True, rules=RULES, eid="a-short"),
+            _trace("accepted", False, rules=RULES, eid="a-f1"), _long(_trace("accepted", False, rules=RULES, eid="a-f2"), 2)]
+    # rejected candidate: ours falls back to the baseline rollouts (all failures -> single_fail)
+    rejected = [*[_trace("baseline", False, eid=f"f{i}") for i in range(3)],
+                _trace("exploration", True, rules=RULES, eid="x")]
+    traces = {"r1/task_000": hard, "r1/task_001": rejected}
+    ours = plan_pairs(traces, condition="ours")
+    assert [(r["tier"], r["induction"]) for r in ours.rows] == [("accepted", "paired_diff"),
+                                                                 ("baseline_fallback", "single_fail")]
+    assert ours.work[0].succ["episode_id"] == "a-short" and ours.work[0].fail["episode_id"] == "a-f2"
+    assert ours.work[1].succ is None and ours.work[1].fail["episode_id"].startswith("f")
+    orig = plan_pairs(traces, condition="orig")
+    assert [(r["tier"], r["induction"]) for r in orig.rows] == [("baseline", "single_succ"), ("baseline", "single_fail")]
+
+
+def test_alfworld_pair_prompts():
+    seen = []
+
+    def responder(messages, tools):
+        seen.append((messages[0].content, messages[1].content))
+        return ChatResponse(content="# Memory Item 1\n## Title Page past the first result\n## Description d\n## Content c")
+
+    traces = {"r1/task_000": [_trace("accepted", True, rules=RULES, eid="s"), _trace("accepted", False, rules=RULES, eid="f")],
+              "r1/task_001": [_trace("baseline", False, eid="f0")]}
+    plan = plan_pairs(traces, condition="ours")
+    client = ScriptedClient(responder=responder)
+    induce_pick(client, plan.work[0], existing_lesson_titles=["Old lesson"])
+    induce_pick(client, plan.work[1])
+    (sys_pair, user_pair), (sys_fail, user_fail) = seen
+    assert "COMPARING two trajectories on the same task in the same environment" in sys_pair
+    assert user_pair.startswith("Task: Move my meeting.") and "FAILURE trajectory:" in user_pair
+    assert "EXISTING LESSONS" in user_pair and "Old lesson" in user_pair
+    assert "GAIA2 personal-assistant environment" in sys_fail and "ALFWorld" not in sys_fail
+    assert "attempted to resolve the task but failed" in sys_fail and user_fail.startswith("User query: Move my meeting.")
+    items, stats = build(plan, client, lambda texts: [[0.1] for _ in texts], condition="ours")
+    assert stats["pairs"] == 2 and [it.source["induction"] for it in items] == ["paired_diff"]  # same title deduped
+    assert stats["tiers"] == {"accepted": 1, "baseline_fallback": 1}
 
 
 def test_induction_prompt_threads_diagnosis_and_existing_titles():

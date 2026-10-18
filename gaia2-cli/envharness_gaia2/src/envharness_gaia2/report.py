@@ -230,7 +230,9 @@ class Report:
             ok &= check.returncode == 0 and not outside and n_skills == len(bank) and (not bank or dims == {max(dims)} and max(dims) > 0)
         orig = _jsonl(self.run / "banks" / "orig.jsonl")
         lines.append(f"- orig bank: {len(orig)} items")
-        self.add("5. Skill banks (SWE-bench bank_distillation port)", ok and bool(self.rounds), lines)
+        mode = self.config.get("config", {}).get("bank", {}).get("mode", "swebench_cascade")
+        source = {"swebench_cascade": "SWE-bench bank_distillation", "alfworld_pair": "ALFWorld induce_pair"}.get(mode, mode)
+        self.add(f"5. Skill banks ({source} port)", ok and bool(self.rounds), lines)
 
         lines, ok = [], True
         for prev, nxt in zip(self.rounds, self.rounds[1:]):

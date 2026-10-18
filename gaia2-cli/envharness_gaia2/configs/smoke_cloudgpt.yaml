@@ -55,7 +55,10 @@ envrigger:                         # experiments/swebench/corpus.yaml
   target_band: [0.4, 0.6]
   skip_passthrough_candidates: true
 
-bank:                              # experiments/swebench/bank_distillation defaults
+bank:
+  mode: alfworld_pair              # scripts/induce_pair.py (ALFWorld); swebench_cascade = experiments/swebench/bank_distillation
+                                   # the keys below are the swebench_cascade defaults (alfworld_pair uses dedup_titles,
+                                   # embed_model and concurrency only)
   max_pairs_per_task: 5
   max_baseline_rollouts: 5
   tier2_last_only: true

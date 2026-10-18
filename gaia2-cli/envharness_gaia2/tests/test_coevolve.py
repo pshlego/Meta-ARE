@@ -60,8 +60,9 @@ def _pipeline(cfg, run_dir, runner, log):
                     embedder=lambda texts: [[1.0, 0.0] for _ in texts])
 
 
-def test_two_rounds_resume_and_eval(tmp_path):
-    cfg = load_config(_config(tmp_path), verify_image=False)
+@pytest.mark.parametrize("mode", ["alfworld_pair", "swebench_cascade"])
+def test_two_rounds_resume_and_eval(tmp_path, mode):
+    cfg = load_config(_config(tmp_path, **{"bank.mode": mode}), verify_image=False)
     run_dir = cfg.run_root / "r1"
     run_dir.mkdir(parents=True)
     runner, log = FakeGaia2Runner(_outcome), []

@@ -35,7 +35,7 @@ _SECTIONS: dict[str, set[str] | None] = {
     },
     "optimizer_llm": {"model", "api_base", "wire_api", "reasoning_effort", "induce_reasoning_effort"},
     "envrigger": {"k_per_candidate", "max_k", "target_band", "skip_passthrough_candidates"},
-    "bank": {"max_pairs_per_task", "max_baseline_rollouts", "tier2_last_only", "dedup_titles", "embed_model",
+    "bank": {"mode", "max_pairs_per_task", "max_baseline_rollouts", "tier2_last_only", "dedup_titles", "embed_model",
              "concurrency", "orig_seed"},
     "coevolution": {"rounds"},
     "budget": {"max_rollouts"},
@@ -58,6 +58,7 @@ class OptimizerLLMConfig:
 
 @dataclass(frozen=True)
 class BankConfig:
+    mode: str  # swebench_cascade | alfworld_pair (bank.BANK_MODES)
     max_pairs_per_task: int
     max_baseline_rollouts: int | None
     tier2_last_only: bool
@@ -185,6 +186,8 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
     band = tuple(float(x) for x in env["target_band"])
     if len(band) != 2 or not 0.0 <= band[0] < band[1] <= 1.0:
         raise ConfigError("envrigger.target_band must be [lo, hi] with 0 <= lo < hi <= 1 (DifficultyZone)")
+    if bank["mode"] not in ("swebench_cascade", "alfworld_pair"):
+        raise ConfigError("bank.mode must be swebench_cascade or alfworld_pair")
     rounds = int(raw["coevolution"]["rounds"])
     if rounds < 1:
         raise ConfigError("coevolution.rounds must be >= 1 (1 = the original single pass)")
@@ -209,6 +212,7 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
         target_band=band,  # type: ignore[arg-type]
         skip_passthrough_candidates=bool(env["skip_passthrough_candidates"]),
         bank=BankConfig(
+            mode=str(bank["mode"]),
             max_pairs_per_task=int(bank["max_pairs_per_task"]),
             max_baseline_rollouts=None if bank["max_baseline_rollouts"] is None else int(bank["max_baseline_rollouts"]),
             tier2_last_only=bool(bank["tier2_last_only"]),
