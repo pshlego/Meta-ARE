@@ -224,25 +224,50 @@ class Report:
         tool = self.repo / "gaia2-cli" / "shared" / "harness_tool.py"
         policy = self.repo / self.config.get("config", {}).get("harness_policy", "")
         seed = self.run / "seed_harness"
+        retrieval = self.config.get("config", {}).get("retrieval")
+        top_k = int(retrieval["top_k"]) if retrieval else None
+
+        def harness_ok(harness: Path) -> tuple[bool, str]:
+            check = subprocess.run([sys.executable, str(tool), "check", str(harness), "--policy", str(policy)],
+                                   capture_output=True, text=True)
+            outside = [p.relative_to(seed).as_posix() for p in seed.rglob("*")
+                       if p.is_file() and p.relative_to(seed).parts[0] != "skills"
+                       and not filecmp.cmp(p, harness / p.relative_to(seed), shallow=False)]
+            return check.returncode == 0 and not outside, (
+                f"harness check {'ok' if check.returncode == 0 else check.stderr.strip()}, "
+                f"non-skill diffs {outside or 'none'}")
+
         lines, ok = [], True
         for round_dir in self.rounds:
             stats = _json(round_dir / "bank_build.json")
             for name, st in stats.items():
                 lines.append(f"- {round_dir.name} {name}: pairs={st.get('pairs')} empty_pairs={st.get('empty_pairs')} "
                              f"items={st.get('items')} (before dedup {st.get('items_before_dedup')}) tiers={st.get('tiers')}")
-            harness = round_dir / "harness"
-            check = subprocess.run([sys.executable, str(tool), "check", str(harness), "--policy", str(policy)],
-                                   capture_output=True, text=True)
-            outside = [p.relative_to(seed).as_posix() for p in seed.rglob("*")
-                       if p.is_file() and p.relative_to(seed).parts[0] != "skills"
-                       and not filecmp.cmp(p, harness / p.relative_to(seed), shallow=False)]
             bank = _jsonl(self.run / "banks" / f"{'ours_' + round_dir.name}.jsonl")
             dims = {len(item.get("embedding") or []) for item in bank}
-            n_skills = len(list(harness.glob("skills/*/SKILL.md")))
-            lines.append(f"- {round_dir.name} bank: {len(bank)} items, embedding dims {sorted(dims)}, rendered skills "
-                         f"{n_skills}, harness check {'ok' if check.returncode == 0 else check.stderr.strip()}, "
-                         f"non-skill diffs {outside or 'none'}")
-            ok &= check.returncode == 0 and not outside and n_skills == len(bank) and (not bank or dims == {max(dims)} and max(dims) > 0)
+            dims_ok = not bank or (dims == {max(dims)} and max(dims) > 0)
+            if top_k is None:
+                harness = round_dir / "harness"
+                good, detail = harness_ok(harness)
+                n_skills = len(list(harness.glob("skills/*/SKILL.md")))
+                lines.append(f"- {round_dir.name} bank: {len(bank)} items, embedding dims {sorted(dims)}, rendered skills "
+                             f"{n_skills}, {detail}")
+                ok &= good and n_skills == len(bank) and dims_ok
+            else:
+                lines.append(f"- {round_dir.name} bank: {len(bank)} items, embedding dims {sorted(dims)}")
+                ok &= dims_ok
+        if top_k is not None:  # every per-scenario harness: seed + at most top_k skills
+            harnesses = sorted(p for p in (self.run / "rounds").glob("r*/student_harnesses/*") if p.is_dir())
+            harnesses += sorted(p for p in (self.run / "eval" / "harnesses").glob("*/*") if p.is_dir())
+            bad = []
+            for harness in harnesses:
+                good, detail = harness_ok(harness)
+                n = len(list(harness.glob("skills/*/SKILL.md")))
+                if not good or not 1 <= n <= top_k:
+                    bad.append(f"{harness.relative_to(self.run)}: {n} skills, {detail}")
+            lines.append(f"- retrieval top_k={top_k} ({retrieval.get('mode')}, lambda {retrieval.get('mmr_lambda')}): "
+                         f"{len(harnesses)} per-scenario harnesses rendered, bad: {bad or 'none'}")
+            ok &= not bad
         orig = _jsonl(self.run / "banks" / "orig.jsonl")
         lines.append(f"- orig bank: {len(orig)} items")
         mode = self.config.get("config", {}).get("bank", {}).get("mode", "swebench_cascade")
@@ -251,21 +276,49 @@ class Report:
 
         lines, ok = [], True
         for prev, nxt in zip(self.rounds, self.rounds[1:]):
-            expected = (prev / "harness.digest").read_text().strip() if (prev / "harness.digest").is_file() else None
-            digests = {_json(p).get("harness_digest") for p in _results(nxt / "corpus") if "/baseline/" in str(p)}
-            match = digests == {expected}
-            lines.append(f"- {nxt.name} corpus ran on {prev.name}'s bank harness ({expected}): {match}")
-            ok &= match
+            if top_k is None:
+                expected = (prev / "harness.digest").read_text().strip() if (prev / "harness.digest").is_file() else None
+                digests = {_json(p).get("harness_digest") for p in _results(nxt / "corpus") if "/baseline/" in str(p)}
+                match = digests == {expected}
+                lines.append(f"- {nxt.name} corpus ran on {prev.name}'s bank harness ({expected}): {match}")
+                ok &= match
+                continue
+            bank_titles = {item.get("title") for item in _jsonl(self.run / "banks" / f"ours_{prev.name}.jsonl")}
+            n_tasks, problems = 0, []
+            for task_dir in sorted((nxt / "corpus").glob("task_*")):
+                record = _json(task_dir / "retrieval.json")
+                n_tasks += 1
+                titles = record.get("skills") or []
+                digests = {_json(p).get("harness_digest") for p in _results(task_dir) if "/baseline/" in str(p)}
+                if (not set(titles) <= bank_titles or len(titles) != min(top_k, len(bank_titles))
+                        or digests != {record.get("harness_digest")}):
+                    problems.append(f"{task_dir.name}: {len(titles)} skills, digests {sorted(map(str, digests))}")
+            lines.append(f"- {nxt.name} corpus: {n_tasks} tasks ran with the top-{top_k} of {prev.name}'s bank "
+                         f"({len(bank_titles)} items); problems: {problems or 'none'}")
+            ok &= not problems
         cat_seen = False
         for arm, data in self.eval.items():
-            names = [p.parent.name for p in Path(data.get("harness_dir", "")).glob("skills/*/SKILL.md")]
-            traces = [p for p in (self.run / "eval" / arm).rglob("trace.jsonl")]
-            text = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in traces)
-            listed = sum(1 for name in names if name in text)
-            cat_seen |= bool(re.search(r"skills/[a-z0-9-]+/SKILL\.md", text))
-            lines.append(f"- eval {arm}: {data.get('n_skills')} skills, listed in the student's prompt: {listed}/{len(names)}, "
-                         f"digest ok: {data.get('digest_ok')}")
-            ok &= listed == len(names) and bool(data.get("digest_ok"))
+            text_of = {}
+            for trace in (self.run / "eval" / arm).rglob("trace.jsonl"):
+                text_of.setdefault(trace.parent.name, []).append(trace.read_text(encoding="utf-8", errors="replace"))
+            listed = total = 0
+            for sid, harness in (data.get("case_harness") or {}).items():
+                names = [p.parent.name for p in Path(harness).glob("skills/*/SKILL.md")]
+                text = "\n".join(text_of.get(sid, []))
+                total += len(names)
+                listed += sum(1 for name in names if name in text)
+                cat_seen |= bool(re.search(r"skills/[a-z0-9-]+/SKILL\.md", text))
+            if not data.get("case_harness"):  # summaries written before per-case harnesses
+                names = [p.parent.name for p in Path(data.get("harness_dir", "")).glob("skills/*/SKILL.md")]
+                text = "\n".join(t for ts in text_of.values() for t in ts)
+                listed, total = sum(1 for name in names if name in text), len(names)
+                cat_seen |= bool(re.search(r"skills/[a-z0-9-]+/SKILL\.md", text))
+            per_case = [len(v) for v in (data.get("case_skills") or {}).values()]
+            shape = (f"{min(per_case)}-{max(per_case)} skills per scenario" if per_case and top_k is not None
+                     else f"{data.get('n_skills')} skills")
+            lines.append(f"- eval {arm}: bank {data.get('n_skills')} items, {shape}, listed in the student's prompt: "
+                         f"{listed}/{total}, digest ok: {data.get('digest_ok')}")
+            ok &= listed == total and bool(data.get("digest_ok"))
         for record in self.lineage[1:]:
             lines.append(f"- round {record['round']} augment-mode new items: {len(record.get('new_items', []))}")
         lines.append(f"- student read a SKILL.md in eval: {cat_seen}")

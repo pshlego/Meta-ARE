@@ -14,6 +14,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -106,6 +107,7 @@ class Gaia2Runner:
         self.label_prefix = label_prefix
         self.invocations = 0
         self.rollouts = 0  # scenario runs actually launched (excludes resumed attempts)
+        self._lock = threading.Lock()  # run_batch may be called from several threads (per-scenario harnesses)
 
     # -- public ----------------------------------------------------------------
     def run_batch(
@@ -117,18 +119,24 @@ class Gaia2Runner:
         k: int,
         out_dir: Path,
         setup_commands: Sequence[str] = (),
+        concurrency: int | None = None,
     ) -> list[ScenarioResult]:
-        """Run every case ``k`` times; retry infrastructure failures (``infrastructure_retries``)."""
+        """Run every case ``k`` times; retry infrastructure failures (``infrastructure_retries``).
+
+        ``concurrency`` caps this invocation's containers (default ``max_concurrent``) when
+        several invocations share the host.
+        """
         out_dir = Path(out_dir).resolve()
         bundle = (env_rules_code, tuple(setup_commands))
-        results = self._run_attempt(cases, harness_dir, bundle, k, out_dir / "attempt-1")
+        concurrency = concurrency or self.settings.max_concurrent
+        results = self._run_attempt(cases, harness_dir, bundle, k, out_dir / "attempt-1", concurrency)
         for retry in range(self.settings.infrastructure_retries):
             failed_ids = sorted({r.scenario_id for r in results if r.disposition in ("execution_error", "missing")})
             if not failed_ids:
                 break
             retry_cases = [case for case in cases if case.scenario_id in failed_ids]
             retried = self._run_attempt(
-                retry_cases, harness_dir, bundle, k, out_dir / f"attempt-{retry + 2}"
+                retry_cases, harness_dir, bundle, k, out_dir / f"attempt-{retry + 2}", concurrency
             )
             by_key = {(r.scenario_id, r.repetition): r for r in retried}
             results = [by_key.get((r.scenario_id, r.repetition), r) if r.scenario_id in failed_ids else r for r in results]
@@ -142,6 +150,7 @@ class Gaia2Runner:
         bundle: tuple[str | None, tuple[str, ...]],
         k: int,
         attempt_dir: Path,
+        concurrency: int,
     ) -> list[ScenarioResult]:
         env_rules_code, setup = bundle
         attempt_dir.mkdir(parents=True, exist_ok=True)
@@ -168,7 +177,7 @@ class Gaia2Runner:
         self._stage_cases(cases, dataset_dir)
         config_path = attempt_dir / "run.toml"
         config_path.write_text(
-            self._toml(dataset_dir, output_dir, harness_dir, rules_dir, k), encoding="utf-8"
+            self._toml(dataset_dir, output_dir, harness_dir, rules_dir, k, concurrency), encoding="utf-8"
         )
         label = f"{self.label_prefix}={hashlib.sha256(str(attempt_dir).encode()).hexdigest()[:16]}"
         argv = wrap_docker_group(
@@ -198,8 +207,9 @@ class Gaia2Runner:
             if self.settings.azure_config_dir is not None:
                 environment["GAIA2_AZURE_CONFIG_DIR"] = str(self.settings.azure_config_dir)
             environment["GAIA2_CONTAINER_LABELS"] = label
-            self.invocations += 1
-            self.rollouts += len(cases) * k
+            with self._lock:
+                self.invocations += 1
+                self.rollouts += len(cases) * k
             try:
                 completed = subprocess.run(
                     argv,
@@ -207,7 +217,7 @@ class Gaia2Runner:
                     env=environment,
                     text=True,
                     capture_output=True,
-                    timeout=self._process_timeout(len(cases), k),
+                    timeout=self._process_timeout(len(cases), k, concurrency),
                     check=False,
                 )
                 returncode, stdout, stderr = completed.returncode, completed.stdout, completed.stderr
@@ -240,8 +250,9 @@ class Gaia2Runner:
                 check=False,
             )
 
-    def _process_timeout(self, case_count: int, k: int) -> float:
-        waves = (case_count * k + self.settings.max_concurrent - 1) // self.settings.max_concurrent
+    def _process_timeout(self, case_count: int, k: int, concurrency: int | None = None) -> float:
+        concurrency = concurrency or self.settings.max_concurrent
+        waves = (case_count * k + concurrency - 1) // concurrency
         per = self.settings.scenario_timeout_seconds + self.settings.health_timeout_seconds + _PER_SCENARIO_OVERHEAD_SECONDS
         return waves * per + self.settings.process_completion_grace_seconds + _STARTUP_GRACE_SECONDS
 
@@ -260,7 +271,8 @@ class Gaia2Runner:
                 raise ValueError(f"staged scenario digest drift: {destination}")
         dataset_dir.chmod(0o755)
 
-    def _toml(self, dataset_dir: Path, output_dir: Path, harness_dir: Path, rules_dir: Path | None, k: int) -> str:
+    def _toml(self, dataset_dir: Path, output_dir: Path, harness_dir: Path, rules_dir: Path | None, k: int,
+              concurrency: int | None = None) -> str:
         s = self.settings
         q = json.dumps
         lines = [
@@ -299,7 +311,8 @@ class Gaia2Runner:
             "[run]",
             f"timeout = {s.scenario_timeout_seconds}",
             f"health_timeout = {s.health_timeout_seconds}",
-            f"concurrency = {s.max_concurrent}",
+            # >= 2: concurrency 1 makes gaia2-runner use fixed host ports (8090/18789)
+            f"concurrency = {max(2, concurrency or s.max_concurrent)}",
             f"pass_at = {k}",
             "retry = false",
             f"output_dir = {q(str(output_dir))}",

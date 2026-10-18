@@ -40,7 +40,10 @@ _SECTIONS: dict[str, set[str] | None] = {
     "coevolution": {"rounds"},
     "budget": {"max_rollouts"},
     "storage": {"run_root"},
+    "retrieval": {"top_k", "mode", "mmr_lambda"},
 }
+# Optional sections; without ``retrieval`` the whole bank is rendered into skills/.
+_OPTIONAL = {"retrieval"}
 
 
 class ConfigError(ValueError):
@@ -69,6 +72,15 @@ class BankConfig:
 
 
 @dataclass(frozen=True)
+class RetrievalConfig:
+    """Per-scenario top-k skills, as every original eval does (``Bank.retrieve``)."""
+
+    top_k: int
+    mode: str  # cosine | mmr
+    mmr_lambda: float
+
+
+@dataclass(frozen=True)
 class Config:
     path: Path
     raw: dict[str, Any]
@@ -92,6 +104,7 @@ class Config:
     rounds: int
     max_rollouts: int
     run_root: Path
+    retrieval: RetrievalConfig | None = None  # None: the whole bank goes into skills/
 
     @property
     def forbidden_ids(self) -> tuple[str, ...]:
@@ -104,11 +117,11 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
     if not isinstance(raw, dict):
         raise ConfigError("config must be a mapping")
     unknown = sorted(set(raw) - set(_SECTIONS))
-    missing = sorted(set(_SECTIONS) - set(raw))
+    missing = sorted(set(_SECTIONS) - set(raw) - _OPTIONAL)
     if unknown or missing:
         raise ConfigError(f"config keys: unknown={unknown} missing={missing}")
     for section, keys in _SECTIONS.items():
-        if keys is None:
+        if keys is None or section not in raw:
             continue
         value = raw[section]
         if not isinstance(value, dict) or set(value) != keys:
@@ -188,6 +201,12 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
         raise ConfigError("envrigger.target_band must be [lo, hi] with 0 <= lo < hi <= 1 (DifficultyZone)")
     if bank["mode"] not in ("swebench_cascade", "alfworld_pair"):
         raise ConfigError("bank.mode must be swebench_cascade or alfworld_pair")
+    retrieval = None
+    if "retrieval" in raw:
+        ret = raw["retrieval"]
+        retrieval = RetrievalConfig(int(ret["top_k"]), str(ret["mode"]), float(ret["mmr_lambda"]))
+        if retrieval.top_k < 1 or retrieval.mode not in ("cosine", "mmr") or not 0.0 <= retrieval.mmr_lambda <= 1.0:
+            raise ConfigError("retrieval: top_k >= 1, mode cosine|mmr, 0 <= mmr_lambda <= 1")
     rounds = int(raw["coevolution"]["rounds"])
     if rounds < 1:
         raise ConfigError("coevolution.rounds must be >= 1 (1 = the original single pass)")
@@ -224,6 +243,7 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
         rounds=rounds,
         max_rollouts=int(budget["max_rollouts"]),
         run_root=p(raw["storage"]["run_root"]),
+        retrieval=retrieval,
     )
 
 

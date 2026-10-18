@@ -50,7 +50,7 @@ class FakeGaia2Runner:
         self.rollouts = 0
         self.calls = []
 
-    def run_batch(self, cases, *, harness_dir, env_rules_code, k, out_dir, setup_commands=()):
+    def run_batch(self, cases, *, harness_dir, env_rules_code, k, out_dir, setup_commands=(), concurrency=None):
         import subprocess
         import sys
 

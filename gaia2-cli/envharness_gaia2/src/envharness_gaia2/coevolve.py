@@ -10,11 +10,14 @@ Mirrors an envharness ``experiments/<bench>/reproduce.py``:
 * Stage 2 (banks): ``ours`` from the round's traces (``bank.mode``: SWE-bench cascade or ALFWorld pair build),
   ``orig`` from round 1's baseline traces (intra-baseline or ALFWorld baseline-pair build).
 * Stage 3 (eval): nobank / orig / ours_r<r> on the held-out manifest, one
-  attempt per instance; banks are rendered whole into OpenClaw ``skills/``.
+  attempt per instance. With ``retrieval`` each scenario's student gets the
+  bank's top-k items for its first user request in OpenClaw ``skills/`` (the
+  original evals' ``Bank.retrieve``); without it the whole bank is rendered.
 
 Co-evolution (``coevolution.rounds`` > 1) chains original parts only: round r's
 student carries ``bank_{r-1}`` in its skills, and round r's bank adds the new
-lessons of the augment-mode build (``--existing-bank``). ``rounds: 1`` is the
+lessons of the augment-mode build (``--existing-bank``); with ``retrieval`` the
+student of each round r task carries the top-k of ``bank_{r-1}`` for that task. ``rounds: 1`` is the
 original single pass. Tasks, round banks and eval arms commit with DONE
 markers, so ``--resume`` continues where the run stopped.
 """
@@ -22,6 +25,7 @@ markers, so ``--resume`` continues where the run stopped.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -41,9 +45,11 @@ from envharness_gaia2.bank import (
 )
 from envharness_gaia2.config import Config, load_config
 from envharness_gaia2.designer import Gaia2HarnessAgent, make_client
-from envharness_gaia2.evaluate import evaluate
+from envharness_gaia2.evaluate import Arm, evaluate
 from envharness_gaia2.gaia2_run import Gaia2Runner
+from envharness_gaia2.gaia2_run import CaseRef
 from envharness_gaia2.orchestrator import ENV_IMPORT_PATH, ENV_STATE_SCHEMA, EXEC_TOOL_SCHEMA, Gaia2Orchestrator
+from envharness_gaia2.retrieval import Retriever, selection_key
 from envharness_gaia2.skills import render
 
 TASK_DESCRIPTION = (
@@ -57,6 +63,10 @@ TASK_DESCRIPTION = (
 
 def harness_tool_path(cfg: Config) -> Path:
     return cfg.meta_are_repo / "gaia2-cli" / "shared" / "harness_tool.py"
+
+
+def bank_sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes() if path.is_file() else b"").hexdigest()
 
 
 def harness_digest(cfg: Config, harness_dir: Path) -> str:
@@ -82,6 +92,8 @@ class Pipeline:
             reasoning_effort=cfg.optimizer.induce_reasoning_effort,
         )
         self.embed = embedder or openai_embedder(cfg.bank.embed_model, cfg.optimizer.api_base)
+        self.retriever = (Retriever(cfg.retrieval, self.embed, run_dir / "query_embeddings.json")
+                          if cfg.retrieval else None)
         self.state_path = run_dir / "budget.json"
         self.state = (json.loads(self.state_path.read_text(encoding="utf-8")) if self.state_path.is_file()
                       else {"rollouts": 0, "eval_rollouts": 0, "max_rollouts": cfg.max_rollouts, "stopped": None})
@@ -100,6 +112,16 @@ class Pipeline:
         (out_dir.parent / f"{out_dir.name}.digest").write_text(digest + "\n", encoding="utf-8")
         return digest
 
+    def _student_harness(self, bank, case: CaseRef, root: Path) -> tuple[Path, list[str]]:
+        """Seed + the bank's top-k for ``case`` (retrieval mode); equal selections share a harness."""
+        chosen = sorted(self.retriever.select(bank, case), key=lambda item: item.title)
+        if not chosen:
+            return self.run_dir / "seed_harness", []
+        harness = root / selection_key(chosen)
+        if not (root / f"{harness.name}.digest").is_file():
+            self._render(chosen, harness)
+        return harness, [item.title for item in chosen]
+
     # -- main --------------------------------------------------------------------------
     def run(self) -> dict:
         seed_dir = self.run_dir / "seed_harness"
@@ -111,7 +133,8 @@ class Pipeline:
             round_dir = self.run_dir / "rounds" / f"r{round_no}"
             if not (round_dir / "DONE").is_file():
                 self._round(round_no, round_dir, harness, bank)
-            harness = round_dir / "harness"
+            if self.retriever is None:
+                harness = round_dir / "harness"
             bank = load_bank(self.run_dir / "banks" / f"ours_r{round_no}.jsonl")
             if self.state["stopped"]:
                 break
@@ -121,8 +144,9 @@ class Pipeline:
     def _round(self, round_no: int, round_dir: Path, harness: Path, prior_bank: list) -> None:
         started = time.time()
         before = self.state["rollouts"]
-        input_digest = harness_digest(self.cfg, harness)
-        traces_by_task = self.corpus(round_no, round_dir / "corpus", harness)
+        input_digest = harness_digest(self.cfg, harness) if self.retriever is None else None
+        input_bank = bank_sha256(self.run_dir / "banks" / f"ours_r{round_no - 1}.jsonl") if round_no > 1 else None
+        traces_by_task = self.corpus(round_no, round_dir / "corpus", harness, prior_bank)
 
         bank_cfg = self.cfg.bank
         if bank_cfg.mode == "alfworld_pair":
@@ -151,18 +175,22 @@ class Pipeline:
             stats["orig"] = orig_stats
         (round_dir / "bank_build.json").write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
 
-        digest = self._render(bank, round_dir / "harness")
+        # Retrieval mode never renders the whole bank (it may exceed the skill limits); the bank file is the output.
+        digest = self._render(bank, round_dir / "harness") if self.retriever is None else None
+        output_bank = bank_sha256(self.run_dir / "banks" / f"ours_r{round_no}.jsonl")
         with open(self.run_dir / "lineage.jsonl", "a", encoding="utf-8") as handle:
             handle.write(json.dumps({
                 "round": round_no, "input_harness_digest": input_digest, "output_harness_digest": digest,
+                "input_bank_sha256": input_bank, "output_bank_sha256": output_bank,
                 "n_tasks_run": len(traces_by_task), "new_items": [item.title for item in new],
                 "n_skills": len(bank), "rollouts": self.state["rollouts"] - before,
                 "stopped": self.state["stopped"], "elapsed_s": round(time.time() - started, 1),
             }) + "\n")
-        (round_dir / "DONE").write_text(json.dumps({"digest": digest}) + "\n", encoding="utf-8")
+        (round_dir / "DONE").write_text(json.dumps({"digest": digest, "bank_sha256": output_bank}) + "\n",
+                                        encoding="utf-8")
 
     # -- Stage 1 -----------------------------------------------------------------------
-    def corpus(self, round_no: int, corpus_dir: Path, harness: Path) -> dict[str, list[dict]]:
+    def corpus(self, round_no: int, corpus_dir: Path, harness: Path, prior_bank=()) -> dict[str, list[dict]]:
         cfg = self.cfg
         out: dict[str, list[dict]] = {}
         for task_id in range(len(cfg.train_cases)):
@@ -172,17 +200,24 @@ class Pipeline:
                     self.state["stopped"] = f"budget (round {round_no}, before task {task_id})"
                     self._save_state()
                     break
-                self._corpus_task(task_id, task_dir, harness)
+                self._corpus_task(task_id, task_dir, harness, prior_bank)
             out[f"r{round_no}/task_{task_id:03d}"] = [
                 t.model_dump(mode="json") for t in TraceStore(task_dir / "traces.jsonl").all()
             ]
         return out
 
-    def _corpus_task(self, task_id: int, task_dir: Path, harness: Path) -> None:
+    def _corpus_task(self, task_id: int, task_dir: Path, harness: Path, prior_bank=()) -> None:
         cfg = self.cfg
         if task_dir.exists():  # an interrupted attempt of this task: start it over
             shutil.rmtree(task_dir)
         task_dir.mkdir(parents=True)
+        if self.retriever is not None:
+            harness, titles = self._student_harness(prior_bank, cfg.train_cases[task_id],
+                                                    task_dir.parent.parent / "student_harnesses")
+            (task_dir / "retrieval.json").write_text(json.dumps({
+                "bank_size": len(prior_bank), "skills": titles, "harness_dir": str(harness),
+                "harness_digest": harness_digest(cfg, harness),
+            }, indent=2) + "\n", encoding="utf-8")
         before = self.gaia2.rollouts
         orchestrator = Gaia2Orchestrator(
             env_spec=EnvSpec(import_path=ENV_IMPORT_PATH),
@@ -223,19 +258,30 @@ class Pipeline:
     # -- Stage 3 -----------------------------------------------------------------------
     def evaluate(self) -> dict:
         out = self.run_dir / "eval"
-        arms = {"nobank": self.run_dir / "seed_harness"}
+        seed = self.run_dir / "seed_harness"
+        arms = {"nobank": Arm(lambda case: (seed, []), 0)}
+        banks: dict[str, tuple[Path, Path | None]] = {}  # arm -> (bank file, whole-bank harness)
         orig_bank = self.run_dir / "banks" / "orig.jsonl"
         if orig_bank.is_file():
             harness = out / "harness_orig"
-            if not (out / "harness_orig.digest").is_file():
+            if self.retriever is None and not (out / "harness_orig.digest").is_file():
                 self._render(load_bank(orig_bank), harness)
-            arms["orig"] = harness
+            banks["orig"] = (orig_bank, harness)
         for round_dir in sorted((self.run_dir / "rounds").glob("r*"), key=lambda p: int(p.name[1:])):
             if (round_dir / "DONE").is_file():
-                arms[f"ours_{round_dir.name}"] = round_dir / "harness"
+                banks[f"ours_{round_dir.name}"] = (self.run_dir / "banks" / f"ours_{round_dir.name}.jsonl",
+                                                    round_dir / "harness")
+        for name, (bank_file, whole) in banks.items():
+            items = load_bank(bank_file)
+            if self.retriever is None:
+                titles = [item.title for item in items]
+                arms[name] = Arm(lambda case, h=whole, t=titles: (h, t), len(items))
+            else:
+                root = out / "harnesses" / name
+                arms[name] = Arm(lambda case, b=items, r=root: self._student_harness(b, case, r), len(items))
         before = self.gaia2.rollouts
-        summary = evaluate(self.gaia2, self.cfg.dev_cases, harnesses=arms, k=self.cfg.eval_repetitions, out_dir=out,
-                           digest_fn=lambda d: harness_digest(self.cfg, d))
+        summary = evaluate(self.gaia2, self.cfg.dev_cases, arms=arms, k=self.cfg.eval_repetitions, out_dir=out,
+                           digest_fn=lambda d: harness_digest(self.cfg, d), max_concurrent=self.cfg.run.max_concurrent)
         self._count(before, "eval_rollouts")
         return summary
 
