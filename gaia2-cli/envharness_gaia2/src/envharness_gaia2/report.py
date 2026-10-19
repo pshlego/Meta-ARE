@@ -318,7 +318,7 @@ class Report:
             listed = total = 0
             for sid, harness in (data.get("case_harness") or {}).items():
                 if injection == "prompt":  # each pasted insight title, as the JSON trace spells it
-                    names = [json.dumps(title)[1:-1] for title in injected_titles(Path(harness))]
+                    names = [json.dumps(title, ensure_ascii=False)[1:-1] for title in injected_titles(Path(harness))]
                 else:
                     names = [p.parent.name for p in Path(harness).glob("skills/*/SKILL.md")]
                 text = "\n".join(text_of.get(sid, []))
