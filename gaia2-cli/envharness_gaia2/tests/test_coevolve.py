@@ -21,7 +21,8 @@ def _config(tmp_path: Path, **overrides) -> Path:
     raw["storage"]["run_root"] = str(tmp_path / "runs")
     raw["task_agent"]["azure_config_dir"] = None
     raw["envrigger"]["k_per_candidate"] = 3
-    raw.pop("retrieval", None)  # whole-bank mode; tests/test_retrieval.py adds the section back
+    for optional in ("retrieval", "injection", "evaluation"):  # defaults: whole bank as SKILL.md, orig arm on;
+        raw.pop(optional, None)                                # tests/test_retrieval.py adds the sections back
     for dotted, value in overrides.items():
         section, key = dotted.split(".")
         raw[section][key] = value
