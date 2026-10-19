@@ -269,3 +269,57 @@ def test_total_budget_counts_eval(tmp_path):
         path.write_text(yaml.safe_dump(broken))
         with pytest.raises(ConfigError):
             load_config(path, verify_image=False)
+
+
+@pytest.fixture
+def clean_fatal_errors():
+    from envharness_gaia2 import designer
+
+    designer.FATAL_ERRORS.clear()
+    yield
+    designer.FATAL_ERRORS.clear()
+
+
+UNAVAILABLE = ('Error code: 400 - {"error":{"message":"The requested model is not available for integrator",'
+               '"code":"model_not_available"}}')
+
+
+def test_unavailable_designer_model_stops_without_committing(tmp_path, clean_fatal_errors):
+    """A proxy's 400 model_not_available is fatal: the round is not committed and --resume reruns it."""
+    from envharness_gaia2 import designer
+    from envharness_gaia2.designer import OptimizerUnavailable, ThreadSafeLoggingLLMClient
+
+    def unavailable(messages, tools):
+        raise RuntimeError(UNAVAILABLE)
+
+    cfg = load_config(_config(tmp_path, **{"coevolution.rounds": 1}), verify_image=False)
+    run_dir = cfg.run_root / "fatal"
+    run_dir.mkdir(parents=True)
+    broken = ThreadSafeLoggingLLMClient(inner_factory="envharness.infra.llm:ScriptedClient",
+                                        inner_kwargs={"responder": unavailable},
+                                        log_path=str(run_dir / "designer_calls.jsonl"), role="designer")
+    runner = FakeGaia2Runner(_outcome)
+    with pytest.raises(OptimizerUnavailable, match="model_not_available"):
+        Pipeline(cfg, run_dir, gaia2=runner, designer_client=broken, induce_client=_inducer([]),
+                 embedder=lambda texts: [[1.0, 0.0] for _ in texts]).run()
+    assert not list(run_dir.rglob("DONE")) and not (run_dir / "lineage.jsonl").exists()
+
+    designer.FATAL_ERRORS.clear()  # a new process after the endpoint is fixed
+    _pipeline(cfg, run_dir, runner, []).run()
+    assert (run_dir / "rounds" / "r1" / "DONE").is_file()
+    assert all((run_dir / "rounds" / "r1" / "corpus" / f"task_{t:03d}" / "DONE").is_file()
+               for t in range(len(cfg.train_cases)))
+
+
+def test_unavailable_induction_model_stops_without_committing(tmp_path, clean_fatal_errors):
+    def unavailable(messages, tools):
+        raise RuntimeError(UNAVAILABLE)
+
+    cfg = load_config(_config(tmp_path, **{"coevolution.rounds": 1}), verify_image=False)
+    run_dir = cfg.run_root / "fatal_induce"
+    run_dir.mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="model_not_available"):
+        Pipeline(cfg, run_dir, gaia2=FakeGaia2Runner(_outcome), designer_client=_designer(),
+                 induce_client=ScriptedClient(responder=unavailable),
+                 embedder=lambda texts: [[1.0, 0.0] for _ in texts]).run()
+    assert not (run_dir / "rounds" / "r1" / "DONE").exists() and not (run_dir / "lineage.jsonl").exists()

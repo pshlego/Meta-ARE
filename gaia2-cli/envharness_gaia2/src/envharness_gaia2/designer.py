@@ -12,8 +12,28 @@ from typing import Any, Iterable
 
 from envharness.agents.harness_agent import LLMHarnessAgent
 from envharness.infra.llm import ChatResponse, LLMClient, LoggingLLMClient, ToolCall
+from envharness.reasoning_bank.induce import _is_fatal_llm_error
 
 from envharness_gaia2 import PROMPTS_DIR
+
+
+# Error codes a proxy returns as HTTP 400 when the model itself cannot be served; upstream
+# OpenAI reports these as 404 NotFoundError, which the original already treats as fatal.
+_MODEL_UNAVAILABLE_MARKERS = ("model_not_available", "unsupported_api_for_model", "model_not_supported",
+                              "DeploymentNotFound")
+
+# Fatal optimizer errors seen in this process. The original orchestrator salvages a designer
+# exception as task_aborted and moves on; the co-evolution loop reads this to stop instead of
+# committing a round the optimizer never worked on.
+FATAL_ERRORS: list[str] = []
+
+
+class OptimizerUnavailable(RuntimeError):
+    """The optimizer LLM cannot be served (auth, missing model); retrying will not help."""
+
+
+def is_fatal_optimizer_error(exc: Exception) -> bool:
+    return _is_fatal_llm_error(exc) or any(marker in str(exc) for marker in _MODEL_UNAVAILABLE_MARKERS)
 
 
 class ResponsesClient(LLMClient):
@@ -173,6 +193,8 @@ class ThreadSafeLoggingLLMClient(LoggingLLMClient):
         except Exception as e:  # noqa: BLE001 - logged, then re-raised
             exc, error = e, f"{type(e).__name__}: {e}"
             resp = ChatResponse(content="", tool_calls=[])
+            if is_fatal_optimizer_error(e):
+                FATAL_ERRORS.append(f"{self.role}: {error[:500]}")
         record = {
             "ts": time.time(),
             "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

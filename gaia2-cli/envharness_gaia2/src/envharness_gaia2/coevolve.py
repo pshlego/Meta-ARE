@@ -48,6 +48,7 @@ from envharness_gaia2.bank import (
     build, dedup_by_title, load_bank, openai_embedder, plan_orig, plan_ours, plan_pairs, save_bank,
 )
 from envharness_gaia2.config import Config, load_config
+from envharness_gaia2 import designer
 from envharness_gaia2.designer import Gaia2HarnessAgent, make_client
 from envharness_gaia2.evaluate import Arm, evaluate
 from envharness_gaia2.gaia2_run import Gaia2Runner
@@ -241,6 +242,10 @@ class Pipeline:
         traces.jsonl comes back empty (the orchestrator aborted it) is re-run up to CORPUS_RETRIES times."""
         for attempt in range(1 + CORPUS_RETRIES):
             used = self._corpus_task_once(task_id, task_dir, harness, prior_bank)
+            if designer.FATAL_ERRORS:  # the orchestrator salvaged it as task_aborted/task_failed
+                raise designer.OptimizerUnavailable(
+                    f"task {task_id}: optimizer LLM unavailable; not marking the task done "
+                    f"(--resume reruns it): {designer.FATAL_ERRORS[0]}")
             if TraceStore(task_dir / "traces.jsonl").all():
                 break
             print(f"[corpus] task {task_id}: no traces (attempt {attempt + 1}/{1 + CORPUS_RETRIES})", file=sys.stderr)

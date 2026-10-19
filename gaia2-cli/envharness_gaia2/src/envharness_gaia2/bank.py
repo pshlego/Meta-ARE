@@ -42,11 +42,12 @@ from pathlib import Path
 
 from envharness.infra.llm import LLMClient, Message
 from envharness.reasoning_bank.bank import MemoryItem
-from envharness.reasoning_bank.induce import PAIRED_DIFF_SI, _is_fatal_llm_error, parse_memory_items
+from envharness.reasoning_bank.induce import PAIRED_DIFF_SI, parse_memory_items
 from envharness.reasoning_bank.induce import format_trajectory as reasoning_bank_trajectory
 from envharness.third_party.reasoning_bank.prompts import FAILED_SI, SUCCESSFUL_SI
 
 from envharness_gaia2 import PROMPTS_DIR
+from envharness_gaia2.designer import is_fatal_optimizer_error
 
 BANK_MODES = ("swebench_cascade", "alfworld_pair")
 TIER_LABELS = ("1_accepted", "2_exploration_last", "3_baseline_fallback", "skip_no_base_fail", "skip_no_succ")
@@ -312,7 +313,7 @@ def induce_paired_diff_atomic(
             )
             return parse_memory_items(response.content or "")[:max_items]
         except Exception as exc:  # noqa: BLE001 - mirrors the original's retry-then-empty policy
-            if _is_fatal_llm_error(exc):
+            if is_fatal_optimizer_error(exc):
                 raise  # auth/permission/budget errors fail every call (induce.py)
             if attempt == retries - 1:
                 print(f"[bank] induction failed: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -461,7 +462,7 @@ def induce_pick(client: LLMClient, work: PickWork, *, existing_lesson_titles: Se
             )
             return parse_memory_items(response.content or "")[:max_items]
         except Exception as exc:  # noqa: BLE001 - mirrors the original's retry-then-empty policy
-            if _is_fatal_llm_error(exc):
+            if is_fatal_optimizer_error(exc):
                 raise  # auth/permission/budget errors fail every call (induce.py)
             if attempt == retries - 1:
                 print(f"[bank] induction failed: {type(exc).__name__}: {exc}", file=sys.stderr)
