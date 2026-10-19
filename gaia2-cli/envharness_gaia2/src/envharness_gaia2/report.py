@@ -192,7 +192,7 @@ class Report:
                     setup_tagged += f"Event-ENV-setup-{entry.get('index')}" in ids
         rules_errors = [p for p in (self.run / "rounds").rglob("env_rules_errors.log") if p.stat().st_size > 0]
         error_traces = sum(1 for p in (self.run / "rounds").rglob("traces.jsonl") for t in _jsonl(p)
-                           if str(t.get("error") or "").startswith("rules_error"))
+                           if str(t.get("error") or "").startswith(("rules_error", "env.step raised")))
         monitors = {
             "write shown as failed (T exit_code 0->!=0 on wrote)": sum(
                 1 for e in applied if e.get("kind") == "transition_modified" and e.get("wrote")
@@ -347,10 +347,10 @@ class Report:
         self.add("8. Budget", total <= cap,
                  [f"- rollouts: corpus {self.state.get('rollouts')} + eval {self.state.get('eval_rollouts')} = {total} "
                   f"(cap {cap}); stopped: {self.state.get('stopped')}"])
-        rows = ["| arm | skills | valid | success rate | per case |", "|---|---|---|---|---|"]
+        rows = ["| arm | skills | valid / attempts | success rate (errors = failures) | per case |", "|---|---|---|---|---|"]
         for name, data in self.eval.items():
             per_case = {sid: [r["success"] for r in rs] for sid, rs in data.get("cases", {}).items()}
-            rows.append(f"| {name} | {data.get('n_skills')} | {data.get('valid')} | {data.get('success_rate')} | {per_case} |")
+            rows.append(f"| {name} | {data.get('n_skills')} | {data.get('valid')}/{data.get('attempts')} | {data.get('success_rate')} | {per_case} |")
         expected_arms = {"nobank", "orig", *(f"ours_{r.name}" for r in self.rounds)}
         valid = set(self.eval) == expected_arms and all(data.get("valid") for data in self.eval.values())
         self.add("9. Evaluation (held-out; smoke checks validity only)", valid,

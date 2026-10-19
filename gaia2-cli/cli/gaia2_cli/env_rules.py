@@ -32,6 +32,7 @@ go to ``errors.log``. This module is stdlib-only.
 
 from __future__ import annotations
 
+import builtins
 import contextlib
 import fcntl
 import importlib
@@ -48,6 +49,23 @@ from typing import Any
 
 DEFAULT_RULES_HOME = "/var/gaia2/env_rules"
 _REASON_LOG_CHARS = 200
+
+# Second line of the host-side static check (envharness_gaia2.rules_check): rules code
+# gets builtins without file/eval/introspection access and may import only these modules.
+_RULES_IMPORTS = frozenset({"re", "json", "random", "hashlib", "itertools", "textwrap"})
+_DENIED_BUILTINS = frozenset(
+    {
+        "open", "eval", "exec", "compile", "globals", "locals", "vars", "setattr", "delattr", "input",
+        "breakpoint", "exit", "quit", "help", "__import__", "__loader__", "__spec__",
+    }
+)
+_INTROSPECTION_ATTRS = frozenset(
+    {
+        "gi_frame", "gi_code", "gi_yieldfrom", "cr_frame", "cr_code", "cr_await", "ag_frame", "ag_code",
+        "ag_await", "f_globals", "f_locals", "f_builtins", "f_back", "f_code", "f_trace", "tb_frame",
+        "tb_next", "co_code", "co_consts", "func_globals", "func_code", "modules",
+    }
+)
 
 
 @dataclass
@@ -132,21 +150,42 @@ class RulesCodeError(Exception):
 
 
 def _public_getattr(obj: Any, name: str, *default: Any) -> Any:
-    """``getattr`` for rules code: public attribute names only (no dunder escapes)."""
-    if not isinstance(name, str) or name.startswith("_"):
+    """``getattr`` for rules code: public, non-introspection attribute names only."""
+    if not isinstance(name, str) or name.startswith("_") or name in _INTROSPECTION_ATTRS:
         raise AttributeError(f"rules code may only read public attributes, not {name!r}")
     return getattr(obj, name, *default)
 
 
 def _public_hasattr(obj: Any, name: str) -> bool:
-    if not isinstance(name, str) or name.startswith("_"):
+    if not isinstance(name, str) or name.startswith("_") or name in _INTROSPECTION_ATTRS:
         return False
     return hasattr(obj, name)
+
+
+def _rules_import(name: str, globals: Any = None, locals: Any = None, fromlist: Any = (), level: int = 0) -> Any:
+    if level or name.split(".")[0] not in _RULES_IMPORTS:
+        raise ImportError(f"rules code may import only {sorted(_RULES_IMPORTS)}, not {name!r}")
+    return builtins.__import__(name, globals, locals, fromlist, level)
+
+
+def _rules_builtins() -> dict[str, Any]:
+    allowed = {name: value for name, value in vars(builtins).items() if name not in _DENIED_BUILTINS}
+    allowed.update(__import__=_rules_import, getattr=_public_getattr, hasattr=_public_hasattr)
+    return allowed
+
+
+@contextlib.contextmanager
+def _hook_output_discarded():
+    """A hook's print() goes nowhere (in envharness it reaches the runner's log, not the policy)."""
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        yield
 
 
 def load_rules_class(source: str) -> type[Rules]:
     """Compile rules source in the same namespace contract as envharness ``load_rules_subclass``."""
     namespace: dict[str, Any] = {
+        "__builtins__": _rules_builtins(),
+        "__name__": "env_rules_code",
         "Rules": Rules,
         "Action": Action,
         "Blocked": Blocked,
@@ -306,7 +345,8 @@ def run_app(app: str, group: Any) -> None:
     subcommand = _subcommand(argv)
     is_help = _is_help(argv, subcommand)
     try:
-        rules = load_rules_class(rules_file.read_text(encoding="utf-8"))()
+        with _hook_output_discarded():
+            rules = load_rules_class(rules_file.read_text(encoding="utf-8"))()
     except Exception:
         _error(home, app, "rules load failed; running unchanged")
         group()
@@ -325,7 +365,8 @@ def run_app(app: str, group: Any) -> None:
                          call_index_subcommand=subcommand_index)
         # A: transform or reject before execution.
         try:
-            decision = rules.filter_action(action, env_state)
+            with _hook_output_discarded():
+                decision = rules.filter_action(action, env_state)
         except Exception:
             _error(home, app, "filter_action raised; running unchanged")
             decision = action
@@ -372,7 +413,8 @@ def _transition_and_observation(home: Path, rules: Rules, app: str, subcommand: 
     """T then O on an executed command; returns the (stdout, exit code, stderr) the agent gets."""
     stdout, code, stderr = response.observation.text, response.info["exit_code"], response.info["stderr"]
     try:
-        transformed = rules.modify_transition(executed, response, env_state)
+        with _hook_output_discarded():
+            transformed = rules.modify_transition(executed, response, env_state)
         info = getattr(transformed, "info", None) or {}
         new_stdout = getattr(getattr(transformed, "observation", None), "text", stdout)
         new_code = info.get("exit_code", code)
@@ -389,9 +431,10 @@ def _transition_and_observation(home: Path, rules: Rules, app: str, subcommand: 
 
     # O: transform what the agent sees.
     try:
-        filtered = rules.filter_observation(
-            Observation(text=stdout, data={"exit_code": code, "wrote": wrote}), env_state
-        )
+        with _hook_output_discarded():
+            filtered = rules.filter_observation(
+                Observation(text=stdout, data={"exit_code": code, "wrote": wrote}), env_state
+            )
         text = getattr(filtered, "text", stdout)
         if not isinstance(text, str):
             raise TypeError("filter_observation must return an Observation with str text")

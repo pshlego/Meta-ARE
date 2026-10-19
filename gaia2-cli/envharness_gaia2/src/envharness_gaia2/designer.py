@@ -219,7 +219,8 @@ class Gaia2HarnessAgent(LLMHarnessAgent):
         """Upstream renderer over steps whose command it can read.
 
         The student's final reply is its last action, shown like a command.
-        Its plain-text reasoning is wrapped in the ``<think>`` tags upstream extracts.
+        Reasoning is passed through unchanged: upstream shows only ``<think>`` blocks, so a
+        function-calling student's plain-text reasoning is not shown, as in the original.
         """
         shown = []
         for step in steps:
@@ -229,7 +230,7 @@ class Gaia2HarnessAgent(LLMHarnessAgent):
             reasoning = (getattr(step, "policy_raw_response", None) or "").strip()
             shown.append(SimpleNamespace(
                 raw_action={"name": getattr(action, "name", ""), "kwargs": {"command": command}},
-                policy_raw_response=(reasoning if "<think>" in reasoning else f"<think>{reasoning}</think>") if reasoning else None,
+                policy_raw_response=reasoning or None,
                 filtered_observation=getattr(step, "filtered_observation", None),
                 raw_observation=getattr(step, "raw_observation", None),
                 info=getattr(step, "info", None) or {},

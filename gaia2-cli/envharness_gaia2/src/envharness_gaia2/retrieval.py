@@ -2,7 +2,8 @@
 
 Every original eval retrieves top-k bank items by the task text and injects
 only those (SWE-bench top-5 cosine on the problem statement, ALFWorld and
-SpreadsheetBench top-5 MMR, OfficeQA top-3, WebArena top-3). Here the query is
+SpreadsheetBench top-5 MMR, OfficeQA top-3, WebArena top-5 via reproduce.py's
+TOPK; its dispatcher.sh defaults to 3). Here the query is
 the scenario's first user request (the message the student receives first; no
 oracle content), truncated like the OfficeQA/SpreadsheetBench ``task_query``,
 and the chosen items are rendered into that scenario's ``skills/``.
@@ -42,7 +43,8 @@ def task_query(scenario: Path) -> str:
 
 def selection_key(items: Sequence[MemoryItem]) -> str:
     """Directory name for a rendered selection; equal selections share one harness."""
-    return hashlib.sha256("\n".join(item.title for item in items).encode()).hexdigest()[:16]
+    blob = json.dumps([[item.title, item.description, item.content] for item in items])
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
 class Retriever:

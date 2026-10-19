@@ -83,7 +83,7 @@ def test_step_renderer_shows_commands_in_the_upstream_format():
                 filtered_observation=Observation(text="x" * 1000), policy_raw_response="look up contacts")
     text = Gaia2HarnessAgent._render_steps_for_mutator([step])
     assert "<action>contacts get-contacts --offset 0</action>" in text
-    assert "<think>look up contacts</think>" in text
+    assert "look up contacts" not in text  # upstream shows only <think> blocks (FC policies: none)
     assert "Observation: " + "x" * 400 + " ...[truncated]" in text  # upstream obs limit
 
 

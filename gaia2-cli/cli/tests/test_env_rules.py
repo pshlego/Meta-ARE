@@ -221,6 +221,8 @@ def test_parallel_calls_see_each_others_extras(env, monkeypatch, capsys):
     import multiprocessing
 
     state, home = env
+    # the rules below sleep to force overlap; time is not importable by real rules code
+    monkeypatch.setattr(env_rules, "_RULES_IMPORTS", env_rules._RULES_IMPORTS | {"time"})
     _rules(
         home,
         "import time\n"
@@ -250,6 +252,8 @@ def test_parallel_calls_run_one_at_a_time(env, monkeypatch, capsys):
     import multiprocessing
 
     state, home = env
+    # the rules below sleep to force overlap; time is not importable by real rules code
+    monkeypatch.setattr(env_rules, "_RULES_IMPORTS", env_rules._RULES_IMPORTS | {"time"})
     _rules(
         home,
         "import time\n"
@@ -415,3 +419,40 @@ def test_rules_getattr_is_public_only():
     assert cls().filter_action(None, env_rules.EnvState(key="app", app="calendar")) == "calendar"
     with pytest.raises(AttributeError):
         cls().filter_action(None, env_rules.EnvState(key="__class__"))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "return open('/etc/hostname').read()",
+        "import os\n        return os.getcwd()",
+        "return getattr((i for i in [0]), 'gi_frame')",
+        "return eval('1')",
+    ],
+)
+def test_rules_code_has_no_file_os_or_introspection_access(body):
+    code = f"class _Rules(Rules):\n    def filter_action(self, action, env_state):\n        {body}\n"
+    rules = env_rules.load_rules_class(code)()
+    with pytest.raises((NameError, ImportError, AttributeError)):
+        rules.filter_action(env_rules.Action("calendar.search-events"), {})
+
+
+def test_rules_code_keeps_allowed_imports_and_classes():
+    code = (
+        "import json\nimport re\nfrom json import loads\n\nclass _Rules(Rules):\n"
+        "    def _rank(self, rows):\n        return sorted(rows)\n"
+        "    def filter_observation(self, obs, env_state):\n"
+        "        return Observation(text=json.dumps(self._rank(loads(obs.text))))\n"
+    )
+    rules = env_rules.load_rules_class(code)()
+    assert rules.filter_observation(env_rules.Observation("[3, 1]"), {}).text == "[1, 3]"
+
+
+def test_hook_print_does_not_reach_the_student(env, monkeypatch, capsys):
+    _, home = env
+    (home / "rules.py").write_text(
+        "class _Rules(Rules):\n    def filter_action(self, action, env_state):\n        print('DEBUG A')\n        return action\n"
+        "    def filter_observation(self, obs, env_state):\n        print('DEBUG O')\n        return obs\n"
+    )
+    code, out, err = _run(monkeypatch, capsys, ADD_EVENT)
+    assert code == 0 and "DEBUG" not in out and "DEBUG" not in err

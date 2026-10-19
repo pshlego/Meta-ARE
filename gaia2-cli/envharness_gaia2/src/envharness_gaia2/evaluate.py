@@ -95,6 +95,9 @@ def evaluate(runner: Gaia2Runner, cases: Sequence[CaseRef], *, arms: dict[str, A
                     "result_dir": str(result.scenario_dir) if result.scenario_dir else None,
                 })
         valid = [r for rs in per_case.values() for r in rs if r["disposition"] in ("success", "task_failure")]
+        # experiments/*/reproduce.py: SR = won / all attempts; an errored or missing attempt counts as a failure
+        attempts = len(cases) * k
+        won = sum(1 for rs in per_case.values() for r in rs if r["disposition"] == "success" and r["success"])
         only = next(iter(plan["groups"])) if plan["single"] else None
         summary[name] = {
             "harness_dir": str(only) if only else None,
@@ -103,9 +106,10 @@ def evaluate(runner: Gaia2Runner, cases: Sequence[CaseRef], *, arms: dict[str, A
             "case_harness": {sid: str(path) for sid, path in harness_of.items()},
             "case_skills": plan["skills"],
             "cases": per_case,
+            "attempts": attempts,
             "valid": len(valid),
             "digest_ok": all(r["harness_digest"] == r["expected_harness_digest"] for r in valid),
-            "success_rate": (sum(1 for r in valid if r["success"]) / len(valid)) if valid else None,
+            "success_rate": (won / attempts) if attempts else None,
         }
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")

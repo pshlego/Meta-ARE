@@ -52,6 +52,8 @@ from envharness_gaia2.orchestrator import ENV_IMPORT_PATH, ENV_STATE_SCHEMA, EXE
 from envharness_gaia2.retrieval import Retriever, selection_key
 from envharness_gaia2.skills import render
 
+CORPUS_RETRIES = 2  # experiments/swebench/reproduce.py: re-run a task whose traces.jsonl is empty
+
 TASK_DESCRIPTION = (
     "Mutate GAIA2 train scenarios where the OpenClaw Policy is currently weak; only emit "
     "mutations that exercise failure-recovery skills WITHOUT shifting the env's surface "
@@ -128,11 +130,17 @@ class Pipeline:
         if not (self.run_dir / "seed_harness.digest").is_file():
             self.state["seed_digest"] = self._render([], seed_dir)
             self._save_state()
+        if self.state["stopped"] and self.state["rollouts"] < self.cfg.max_rollouts:
+            # resumed with a raised budget: continue where the cap stopped the run
+            self.state.update(stopped=None, max_rollouts=self.cfg.max_rollouts)
+            self._save_state()
         harness, bank = seed_dir, []
         for round_no in range(1, self.cfg.rounds + 1):
             round_dir = self.run_dir / "rounds" / f"r{round_no}"
             if not (round_dir / "DONE").is_file():
                 self._round(round_no, round_dir, harness, bank)
+            if not (round_dir / "DONE").is_file():
+                break  # the budget stopped this round's corpus: no bank from a partial round
             if self.retriever is None:
                 harness = round_dir / "harness"
             bank = load_bank(self.run_dir / "banks" / f"ours_r{round_no}.jsonl")
@@ -147,6 +155,8 @@ class Pipeline:
         input_digest = harness_digest(self.cfg, harness) if self.retriever is None else None
         input_bank = bank_sha256(self.run_dir / "banks" / f"ours_r{round_no - 1}.jsonl") if round_no > 1 else None
         traces_by_task = self.corpus(round_no, round_dir / "corpus", harness, prior_bank)
+        if len(traces_by_task) < len(self.cfg.train_cases):
+            return  # stopped by the budget; --resume with a larger budget.max_rollouts finishes the round
 
         bank_cfg = self.cfg.bank
         if bank_cfg.mode == "alfworld_pair":
@@ -155,10 +165,13 @@ class Pipeline:
             ours_plan, ours_condition = plan_ours(traces_by_task, max_pairs_per_task=bank_cfg.max_pairs_per_task,
                                                   max_baseline_rollouts=bank_cfg.max_baseline_rollouts,
                                                   tier2_last_only=bank_cfg.tier2_last_only), "cascade"
+        # induce_pair (alfworld_pair) writes every induced item; title dedup is the swebench_cascade
+        # step. Across rounds the merged bank is deduplicated when dedup_titles is set.
+        within_round_dedup = bank_cfg.dedup_titles and bank_cfg.mode != "alfworld_pair"
         new, ours_stats = build(
             ours_plan, self.induce_client, self.embed, condition=ours_condition,
             existing_titles=[item.title for item in prior_bank], concurrency=self.cfg.bank.concurrency,
-            dedup_titles=self.cfg.bank.dedup_titles,
+            dedup_titles=within_round_dedup,
         )
         bank = dedup_by_title([*prior_bank, *new]) if self.cfg.bank.dedup_titles else [*prior_bank, *new]
         save_bank(self.run_dir / "banks" / f"ours_r{round_no}_new.jsonl", new)
@@ -170,7 +183,7 @@ class Pipeline:
             else:
                 orig_plan, orig_condition = plan_orig(traces_by_task, seed=bank_cfg.orig_seed), "intra_baseline"
             orig, orig_stats = build(orig_plan, self.induce_client, self.embed, condition=orig_condition,
-                                     concurrency=bank_cfg.concurrency, dedup_titles=bank_cfg.dedup_titles)
+                                     concurrency=bank_cfg.concurrency, dedup_titles=within_round_dedup)
             save_bank(self.run_dir / "banks" / "orig.jsonl", orig)
             stats["orig"] = orig_stats
         (round_dir / "bank_build.json").write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
@@ -207,6 +220,18 @@ class Pipeline:
         return out
 
     def _corpus_task(self, task_id: int, task_dir: Path, harness: Path, prior_bank=()) -> None:
+        """One orchestrator run per task; like experiments/swebench/reproduce.py, a task whose
+        traces.jsonl comes back empty (the orchestrator aborted it) is re-run up to CORPUS_RETRIES times."""
+        for attempt in range(1 + CORPUS_RETRIES):
+            used = self._corpus_task_once(task_id, task_dir, harness, prior_bank)
+            if TraceStore(task_dir / "traces.jsonl").all():
+                break
+            print(f"[corpus] task {task_id}: no traces (attempt {attempt + 1}/{1 + CORPUS_RETRIES})", file=sys.stderr)
+        (task_dir / "DONE").write_text(json.dumps({"harness_digest": harness_digest(self.cfg, used)})
+                                       + "\n", encoding="utf-8")
+
+    def _corpus_task_once(self, task_id: int, task_dir: Path, harness: Path, prior_bank=()) -> Path:
+        """Run the task's orchestrator once; returns the student harness it used."""
         cfg = self.cfg
         if task_dir.exists():  # an interrupted attempt of this task: start it over
             shutil.rmtree(task_dir)
@@ -218,7 +243,12 @@ class Pipeline:
                 "bank_size": len(prior_bank), "skills": titles, "harness_dir": str(harness),
                 "harness_digest": harness_digest(cfg, harness),
             }, indent=2) + "\n", encoding="utf-8")
-        before = self.gaia2.rollouts
+        base, before = self.state["rollouts"], self.gaia2.rollouts
+
+        def count_rollouts(_: int) -> None:  # saved per batch, so an interrupted task's rollouts still count
+            self.state["rollouts"] = base + self.gaia2.rollouts - before
+            self._save_state()
+
         orchestrator = Gaia2Orchestrator(
             env_spec=EnvSpec(import_path=ENV_IMPORT_PATH),
             policy_spec=PolicySpec(
@@ -249,11 +279,11 @@ class Pipeline:
             harness_dir=harness,
             work_dir=task_dir,
             forbidden_ids=cfg.forbidden_ids,
+            on_rollouts=count_rollouts,
         )
         orchestrator.run()
-        self._count(before)
-        (task_dir / "DONE").write_text(json.dumps({"harness_digest": harness_digest(cfg, harness)}) + "\n",
-                                       encoding="utf-8")
+        count_rollouts(0)
+        return harness
 
     # -- Stage 3 -----------------------------------------------------------------------
     def evaluate(self) -> dict:

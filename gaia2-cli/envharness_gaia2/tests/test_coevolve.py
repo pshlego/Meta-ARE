@@ -21,6 +21,7 @@ def _config(tmp_path: Path, **overrides) -> Path:
     raw["storage"]["run_root"] = str(tmp_path / "runs")
     raw["task_agent"]["azure_config_dir"] = None
     raw["envrigger"]["k_per_candidate"] = 3
+    raw.pop("retrieval", None)  # whole-bank mode; tests/test_retrieval.py adds the section back
     for dotted, value in overrides.items():
         section, key = dotted.split(".")
         raw[section][key] = value
@@ -104,10 +105,20 @@ def test_budget_stops_between_tasks(tmp_path):
     cfg = load_config(_config(tmp_path, **{"budget.max_rollouts": 7}), verify_image=False)
     run_dir = cfg.run_root / "r2"
     run_dir.mkdir(parents=True)
-    result = _pipeline(cfg, run_dir, FakeGaia2Runner(_outcome), []).run()
+    runner = FakeGaia2Runner(_outcome)
+    result = _pipeline(cfg, run_dir, runner, []).run()
     assert result["stopped"].startswith("budget (round 1")
     assert len(list((run_dir / "rounds" / "r1" / "corpus").glob("task_*/DONE"))) == 2  # 6 rollouts each (3 + 3)
-    assert not (run_dir / "rounds" / "r2").exists() and set(result["eval"]) == {"nobank", "orig", "ours_r1"}
+    # a partial round is not committed: no bank from it, only the seed is evaluated
+    assert not (run_dir / "rounds" / "r1" / "DONE").exists() and not (run_dir / "banks").exists()
+    assert not (run_dir / "rounds" / "r2").exists() and set(result["eval"]) == {"nobank"}
+
+    # --resume with a raised cap finishes round 1 (the two committed tasks are not rerun) and round 2
+    bigger = load_config(_config(tmp_path, **{"budget.max_rollouts": 200}), verify_image=False)
+    again = _pipeline(bigger, run_dir, runner, []).run()
+    assert again["stopped"] is None and set(again["eval"]) == {"nobank", "orig", "ours_r1", "ours_r2"}
+    assert again["rollouts"] == 2 * len(cfg.train_cases) * 6
+    assert json.loads((run_dir / "budget.json").read_text())["max_rollouts"] == 200
 
 
 def test_runner_gets_the_skillbank_policy(tmp_path):
@@ -151,3 +162,38 @@ def test_report_runs_on_a_finished_run(tmp_path, monkeypatch):
     for title in ("5. Skill banks", "8. Budget", "9. Evaluation"):
         assert f"## {title}" in text and text.split(f"## {title}")[1].split("\n")[0].endswith("PASS"), title
     assert "corpus ran on r1's bank harness" in text
+
+
+def test_corpus_task_without_traces_is_retried(tmp_path, monkeypatch):
+    from envharness_gaia2 import coevolve
+
+    cfg = load_config(_config(tmp_path, **{"coevolution.rounds": 1}), verify_image=False)
+    run_dir = cfg.run_root / "retry"
+    run_dir.mkdir(parents=True)
+    real_run, seen = coevolve.Gaia2Orchestrator.run, []
+
+    def flaky(self):
+        seen.append(self.config.explicit_task_ids[0])
+        if seen.count(self.config.explicit_task_ids[0]) == 1:
+            return None  # an aborted task: no traces.jsonl
+        return real_run(self)
+
+    monkeypatch.setattr(coevolve.Gaia2Orchestrator, "run", flaky)
+    _pipeline(cfg, run_dir, FakeGaia2Runner(_outcome), []).run()
+    assert seen == [t for t in range(len(cfg.train_cases)) for _ in range(2)]  # experiments/swebench CORPUS_RETRIES
+
+
+def test_eval_success_rate_counts_errors_as_failures(tmp_path):
+    from envharness_gaia2.evaluate import Arm, evaluate
+    from envharness_gaia2.gaia2_run import ScenarioResult
+
+    class Runner:
+        def run_batch(self, cases, *, harness_dir, env_rules_code, k, out_dir, concurrency=None, setup_commands=()):
+            return [ScenarioResult(c.scenario_id, 0, "execution_error" if i == 0 else "success", None if i == 0 else True,
+                                   None, "d", None, "") for i, c in enumerate(cases)]
+
+    from helpers import cases as make_cases
+
+    summary = evaluate(Runner(), make_cases(tmp_path, 4), arms={"a": Arm(lambda c: (tmp_path, []), 0)}, k=1,
+                       out_dir=tmp_path / "eval", digest_fn=lambda d: "d", max_concurrent=2)
+    assert summary["a"]["valid"] == 3 and summary["a"]["attempts"] == 4 and summary["a"]["success_rate"] == 0.75

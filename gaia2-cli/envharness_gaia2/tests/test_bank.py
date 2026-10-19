@@ -23,7 +23,8 @@ RULES = "class _Rules(Rules):\n    pass\n"
 
 
 def _trace(kind, success, *, rules="", cid="c", eid=None, label=None) -> dict:
-    steps = [Step(raw_action=Action(name="exec", kwargs={"command": "calendar get-events"}),
+    command = {"command": "calendar get-events", "text": "calendar get-events"}  # as trace_convert writes it
+    steps = [Step(raw_action=Action(name="exec", kwargs=command), filtered_action=Action(name="exec", kwargs=command),
                   filtered_observation=Observation(text="Task: Move my meeting.\n\nout"),
                   policy_raw_response="check the calendar", info={"task": "Move my meeting."}),
              Step(raw_action=Action(name="reply", kwargs={"text": "Done."}), filtered_observation=Observation(text=""))]
@@ -103,9 +104,41 @@ def test_alfworld_pair_prompts():
     assert "EXISTING LESSONS" in user_pair and "Old lesson" in user_pair
     assert "GAIA2 personal-assistant environment" in sys_fail and "ALFWorld" not in sys_fail
     assert "attempted to resolve the task but failed" in sys_fail and user_fail.startswith("User query: Move my meeting.")
-    items, stats = build(plan, client, lambda texts: [[0.1] for _ in texts], condition="ours")
-    assert stats["pairs"] == 2 and [it.source["induction"] for it in items] == ["paired_diff"]  # same title deduped
+    # the original induce_pair renderer: every step, "Reasoning:/Action:/Observation:" (obs[:350])
+    assert "Step 1:\nReasoning: check the calendar\nAction: calendar get-events\nObservation: Task: Move" in user_pair
+    items, stats = build(plan, client, lambda texts: [[0.1] for _ in texts], condition="ours", dedup_titles=False)
+    assert stats["pairs"] == 2 and [it.source["induction"] for it in items] == ["paired_diff", "single_fail"]
     assert stats["tiers"] == {"accepted": 1, "baseline_fallback": 1}
+    assert items[0].source["task_query"] == "Move my meeting."
+
+
+def test_alfworld_pair_sees_every_step():
+    steps = [Step(raw_action=Action(name="exec", kwargs={"command": f"contacts get-contacts --offset {i}", "text": f"contacts get-contacts --offset {i}"}),
+                  filtered_action=Action(name="exec", kwargs={"command": f"contacts get-contacts --offset {i}", "text": f"contacts get-contacts --offset {i}"}),
+                  filtered_observation=Observation(text=f"page {i}")).model_dump(mode="json") for i in range(30)]
+    seen = []
+    client = ScriptedClient(responder=lambda m, t: seen.append(m[1].content) or ChatResponse(content=""))
+    trace = _trace("baseline", False)
+    trace["steps"] = steps
+    induce_pick(client, plan_pairs({"r1/task_000": [trace]}, condition="orig").work[0])
+    assert "Step 1:" in seen[0] and "--offset 0" in seen[0] and "Step 30:" in seen[0]
+
+
+def test_bank_build_stops_on_fatal_llm_errors_and_empty_banks():
+    class AuthenticationError(Exception):
+        pass
+
+    def fatal(messages, tools):
+        raise AuthenticationError("bad key")
+
+    plan = plan_pairs({"r1/task_000": [_trace("baseline", False)]}, condition="orig")
+    with pytest.raises(AuthenticationError):
+        build(plan, ScriptedClient(responder=fatal), lambda texts: [[0.1] for _ in texts], condition="orig")
+    empty = ScriptedClient(responder=lambda m, t: ChatResponse(content="nothing to add"))
+    with pytest.raises(RuntimeError, match="0 items"):
+        build(plan, empty, lambda texts: [[0.1] for _ in texts], condition="orig")
+    # augment mode (later rounds) may add nothing new
+    assert build(plan, empty, lambda texts: [[0.1] for _ in texts], condition="ours", existing_titles=["Old"])[0] == []
 
 
 def test_induction_prompt_threads_diagnosis_and_existing_titles():

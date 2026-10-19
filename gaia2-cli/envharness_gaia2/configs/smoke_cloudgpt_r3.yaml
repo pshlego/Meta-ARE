@@ -57,8 +57,8 @@ envrigger:                         # experiments/swebench/corpus.yaml
 
 bank:
   mode: alfworld_pair              # scripts/induce_pair.py (ALFWorld); swebench_cascade = experiments/swebench/bank_distillation
-                                   # the keys below are the swebench_cascade defaults (alfworld_pair uses dedup_titles,
-                                   # embed_model and concurrency only)
+                                   # the keys below are the swebench_cascade defaults (alfworld_pair, like induce_pair, does not dedup
+                                   # within a round; dedup_titles applies to the merged bank across rounds)
   max_pairs_per_task: 5
   max_baseline_rollouts: 5
   tier2_last_only: true
@@ -66,6 +66,11 @@ bank:
   embed_model: text-embedding-3-small
   concurrency: 4
   orig_seed: 0
+
+retrieval:                         # every original eval injects Bank.retrieve top-k (ALFWorld/SpreadsheetBench:
+  top_k: 5                         # top-5 MMR, lambda 0.5); query = the scenario's first user request.
+  mode: mmr                        # Round r>=2 students and every eval scenario get their own top-5.
+  mmr_lambda: 0.5
 
 coevolution:
   rounds: 3                        # 1 = the original single pass

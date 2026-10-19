@@ -42,7 +42,8 @@ from pathlib import Path
 
 from envharness.infra.llm import LLMClient, Message
 from envharness.reasoning_bank.bank import MemoryItem
-from envharness.reasoning_bank.induce import PAIRED_DIFF_SI, parse_memory_items
+from envharness.reasoning_bank.induce import PAIRED_DIFF_SI, _is_fatal_llm_error, parse_memory_items
+from envharness.reasoning_bank.induce import format_trajectory as reasoning_bank_trajectory
 from envharness.third_party.reasoning_bank.prompts import FAILED_SI, SUCCESSFUL_SI
 
 from envharness_gaia2 import PROMPTS_DIR
@@ -311,6 +312,8 @@ def induce_paired_diff_atomic(
             )
             return parse_memory_items(response.content or "")[:max_items]
         except Exception as exc:  # noqa: BLE001 - mirrors the original's retry-then-empty policy
+            if _is_fatal_llm_error(exc):
+                raise  # auth/permission/budget errors fail every call (induce.py)
             if attempt == retries - 1:
                 print(f"[bank] induction failed: {type(exc).__name__}: {exc}", file=sys.stderr)
                 return []
@@ -442,15 +445,15 @@ def induce_pick(client: LLMClient, work: PickWork, *, existing_lesson_titles: Se
         system = PAIRED_DIFF_SI
         user = (
             f"Task: {work.task_text[:2000]}\n\n"
-            f"FAILURE trajectory:\n{format_trajectory(work.fail.get('steps') or [])[:7000]}\n\n"
-            f"SUCCESS trajectory:\n{format_trajectory(work.succ.get('steps') or [])[:7000]}\n"
+            f"FAILURE trajectory:\n{reasoning_bank_trajectory(work.fail.get('steps') or [])[:7000]}\n\n"
+            f"SUCCESS trajectory:\n{reasoning_bank_trajectory(work.succ.get('steps') or [])[:7000]}\n"
             f"{existing}"
             "\nCompare. Extract atomic skills. If no clean difference, emit NOTHING."
         )
     else:
         trace = work.succ or work.fail
         system = _gaia2_si(SUCCESSFUL_SI if work.succ else FAILED_SI)
-        user = f"User query: {work.task_text}\n\nTrajectory:\n{format_trajectory(trace.get('steps') or [])}{existing}"
+        user = f"User query: {work.task_text}\n\nTrajectory:\n{reasoning_bank_trajectory(trace.get('steps') or [])}{existing}"
     for attempt in range(retries):
         try:
             response = client.chat(
@@ -458,6 +461,8 @@ def induce_pick(client: LLMClient, work: PickWork, *, existing_lesson_titles: Se
             )
             return parse_memory_items(response.content or "")[:max_items]
         except Exception as exc:  # noqa: BLE001 - mirrors the original's retry-then-empty policy
+            if _is_fatal_llm_error(exc):
+                raise  # auth/permission/budget errors fail every call (induce.py)
             if attempt == retries - 1:
                 print(f"[bank] induction failed: {type(exc).__name__}: {exc}", file=sys.stderr)
                 return []
@@ -469,11 +474,8 @@ def _induce_pick(work: PickWork, client: LLMClient, embed, condition: str, exist
     items = induce_pick(client, work, existing_lesson_titles=existing_titles)
     if not items:
         return []
-    try:
-        embeddings = embed([f"## {it['title']}\n{it['description']}\n{it['content']}" for it in items])
-    except Exception as exc:  # noqa: BLE001
-        print(f"[bank] embedding failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return []
+    # induce_pair embeds after induction and lets an embedding failure (after retries) stop the build
+    embeddings = embed([f"## {it['title']}\n{it['description']}\n{it['content']}" for it in items])
     return [
         MemoryItem(
             title=it["title"], description=it["description"], content=it["content"], embedding=emb,
@@ -482,6 +484,7 @@ def _induce_pick(work: PickWork, client: LLMClient, embed, condition: str, exist
                 "succ_episode_id": (work.succ or {}).get("episode_id", ""),
                 "fail_episode_id": (work.fail or {}).get("episode_id", ""),
                 "succ_candidate_id": _cand_id(work.succ) if work.succ and work.succ.get("kind") != "baseline" else None,
+                "task_query": work.task_text,
             },
         )
         for it, emb in zip(items, embeddings)
@@ -512,6 +515,10 @@ def build(plan: BankPlan, client: LLMClient, embed, *, condition: str, existing_
             got = future.result()
             empty += not got
             items.extend(got)
+    if plan.work and not items and not existing_titles:
+        # augment mode (later rounds) may legitimately emit nothing new. induce_pair.py: "[FATAL] induction produced 0 items ... refusing to hand empty bank(s) to
+        # downstream stages" (an empty arm would silently evaluate as nobank).
+        raise RuntimeError(f"induction produced 0 items for {condition} from {len(plan.work)} pairs")
     before = len(items)
     if dedup_titles:
         items = dedup_by_title(items)

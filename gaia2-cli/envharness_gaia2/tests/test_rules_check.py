@@ -31,13 +31,13 @@ class _Rules(Rules):
 @pytest.mark.parametrize(
     ("code", "message"),
     [
-        (GOOD.replace("import json", "import os"), "may import only"),
+        (GOOD.replace("import json", "import os"), "`os` not allowed"),
         (GOOD + "\n        open('x')\n", None),
-        ("class _Rules(Rules):\n    def step(self, a):\n        return a\n", "remove ['step']"),
+        ("class _Rules(Rules):\n    def step(self, a):\n        return a\n", "overrides ['step']"),
         ("class Other(Rules):\n    pass\n", "_Rules"),
         ("class _Rules(Rules):\n    def filter_action(self, a, s):\n        return a.__class__\n", "dunder"),
-        (GOOD.replace("contacts", "scenario_universe_29_abc"), "scenario identifiers"),
-        ("x" * 9000, "larger"),
+        (GOOD.replace("contacts", "scenario_universe_29_abc"), "scenario identifier"),
+        ("x" * 9000, "over 8192 bytes"),
         # json.loads without `import json`: the hook's own try/except would swallow the NameError
         (GOOD.replace("import json\n", "").replace("except ValueError", "except Exception"), "add `import json`"),
         ("class _Rules(Rules):\n    def filter_action(self, a, s):\n        return helper(a)\n", "`helper`"),
@@ -129,3 +129,49 @@ def test_schema_states_every_limit_the_check_enforces():
     assert f"over {MAX_BYTES} bytes" in ENV_STATE_SCHEMA
     assert f"at most {MAX_SETUP_ACTIONS}" in ENV_STATE_SCHEMA
     assert all(name in ENV_STATE_SCHEMA for name in ALLOWED_IMPORTS)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # escapes found by the audit: private module attributes, modules re-exported by an
+        # allowed module, frame/generator internals, and getattr with a computed name
+        "import random\n        return random._os.system('id')",
+        "import json\n        return json.codecs.open('/etc/passwd').read()",
+        "import json as j\n        m = j\n        return m.codecs",
+        "from json import codecs\n        return codecs",
+        "import textwrap\n        return textwrap.re",
+        "return (i for i in [0]).gi_frame.f_globals",
+        "return (i for i in [0]).gi_frame.f_back",
+        "return getattr(a, 'gi' + '_frame')",
+        "return getattr(a, 'f_globals')",
+        "g = getattr\n        return g(a, 'x')",
+        "return a._private",
+    ],
+)
+def test_rules_check_rejects_sandbox_escapes(body):
+    code = f"class _Rules(Rules):\n    def filter_action(self, a, s):\n        {body}\n"
+    with pytest.raises(RulesCheckError):
+        check_rules_code(code)
+
+
+def test_rules_check_allows_self_private_helpers_and_module_functions():
+    check_rules_code(
+        "import json\nimport re\nfrom json import loads\n\nclass _Rules(Rules):\n"
+        "    def _rank(self, rows):\n        return sorted(rows, key=lambda r: re.sub('a', '', json.dumps(r)))\n"
+        "    def filter_observation(self, obs, s):\n        return Observation(text=json.dumps(self._rank(loads(obs.text))))\n"
+    )
+
+
+def test_rules_check_messages_lead_with_the_cause():
+    # The designer sees only `err=...[:60]` of "RulesCheckError: <message>" (harness_agent.py).
+    cases = {
+        "x" * 9000: "over 8192 bytes",
+        "import os\nclass _Rules(Rules):\n    pass\n": "import `os` not allowed",
+        "class _Rules(Rules):\n    def filter_observation(self, o, s):\n        return json.loads(o.text)\n":
+            "`json` undefined: add `import json`",
+    }
+    for code, head in cases.items():
+        with pytest.raises(RulesCheckError) as exc:
+            check_rules_code(code)
+        assert f"RulesCheckError: {exc.value}"[:60].startswith(f"RulesCheckError: {head}"[:60])

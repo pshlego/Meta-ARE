@@ -19,7 +19,7 @@ from envharness.orchestration.runner import EpisodeRunner, EpisodeSpec
 
 from envharness_gaia2.gaia2_run import CaseRef, Gaia2Runner, ScenarioResult
 from envharness_gaia2.rules_check import RulesCheckError, check_rules_code, setup_commands
-from envharness_gaia2.trace_convert import convert, missing_trace
+from envharness_gaia2.trace_convert import RULES_ERROR_PREFIX, convert, missing_trace
 
 ENV_IMPORT_PATH = "envharness_gaia2.env:Gaia2ScenarioEnv"
 
@@ -84,10 +84,13 @@ use must be imported at the top of rules_code (e.g. `import json` before json.lo
 and only re, json, random, hashlib, itertools and textwrap may be imported; no file,
 OS or network access. A static check rejects (and the rollouts then fail with
 RulesCheckError): rules_code over 8192 bytes (UTF-8), a name that is used but never
-imported or defined, open, eval,
-exec, compile, globals, locals, vars, setattr, delattr, input, any name or attribute
-starting with "__", and references to os/sys/subprocess/socket/shutil/pathlib/io.
-getattr/hasattr work for public names only. env_state, obs.data and response.info
+imported or defined, open, eval, exec, compile, globals, locals, vars, setattr,
+delattr, input, help, breakpoint, exit, quit, any name starting with "__", any
+attribute starting with "_" (except self._x / cls._x), interpreter internals
+(gi_frame, f_globals, f_back, tb_frame, ...), modules reached through an allowed
+module (json.codecs, textwrap.re, ...: call the module's functions instead), and
+references to os/sys/subprocess/socket/shutil/pathlib/io/builtins. getattr/hasattr
+must be called directly with a literal public name. env_state, obs.data and response.info
 are dicts (env_state also allows attribute access): use env_state.get("key").
 Not reachable by hooks: the user's request and notifications (delivered by OpenClaw).
 Probes also go through all three hooks: `<app> --help`, `<app> schema` and
@@ -183,7 +186,7 @@ class Gaia2Orchestrator(Orchestrator):
             (out_dir / "rules_check_error.txt").write_text(str(exc) + "\n", encoding="utf-8")
             return [
                 missing_trace(task_idx=task_id, task_id=self.config.task_id, iteration_id=iteration_id,
-                              candidate=candidate, reason=f"RulesCheckError: {exc}")
+                              candidate=candidate, error=f"RulesCheckError: {exc}")
                 for _ in range(k)
             ]
         results = self.gaia2.run_batch(
@@ -224,7 +227,7 @@ class Gaia2Orchestrator(Orchestrator):
             capability=case.capability,
         )
         trace.policy_model_id = self.policy_spec.client_kwargs.get("model", "")
-        if result.disposition == "task_failure" and trace.error and not trace.error.startswith("rules_error"):
+        if result.disposition == "task_failure" and trace.error and not trace.error.startswith(RULES_ERROR_PREFIX):
             # A stalled agent (no turn boundary / scenario timeout after real
             # model calls) is a task failure, not an execution error: keep it
             # in success statistics and in skill induction.

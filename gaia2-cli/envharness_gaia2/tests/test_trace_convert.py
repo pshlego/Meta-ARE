@@ -83,8 +83,15 @@ def test_interventions_attach_by_exact_argv_and_rules_errors_mark_the_trace(tmp_
     assert trace.steps[0].info["interventions"][0]["kind"] == "observation_modified"
     assert trace.steps[0].info["unattributed_interventions"] == 1
     assert trace.error is None
-    (path / "env_rules_errors.log").write_text("[ts] contacts filter_observation raised; showing the unfiltered output\n")
-    assert _convert(path).error.startswith("rules_error: [ts] contacts filter_observation raised")
+    assert trace.success is True
+    (path / "env_rules_errors.log").write_text(
+        "[ts] contacts filter_observation raised; showing the unfiltered output\nTraceback (most recent call last):\n"
+        '  File "<env_rules>", line 3, in filter_observation\nAttributeError: x has no attribute app\n\n'
+        "[ts] calendar filter_action raised; running unchanged\nTraceback (most recent call last):\nKeyError: 'y'\n")
+    # as envharness's runner: the episode fails with "env.step raised: <Type>: <msg>" (the first one)
+    errored = _convert(path)
+    assert errored.success is False and errored.final_reward == 0.0
+    assert errored.error == "env.step raised: AttributeError: x has no attribute app (in filter_observation)"
 
 
 def test_outputs_before_compaction_and_interventions_by_time(tmp_path):

@@ -40,7 +40,8 @@ def slugify(title: str, taken: set[str]) -> str:
 
 
 def skill_markdown(item: MemoryItem, name: str) -> str:
-    description = " ".join(item.description.split()).replace('"', "'")
+    # one line; no backslash (a YAML escape) or double quote inside the double-quoted scalar
+    description = " ".join(item.description.split()).replace("\\", "/").replace('"', "'")
     return f"---\nname: {name}\ndescription: \"{description}\"\n---\n\n# {item.title.strip()}\n\n{item.content.strip()}\n"
 
 

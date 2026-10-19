@@ -327,7 +327,10 @@ def convert(
     error = None if result.get("success") is not None else (category or "no_judgment")
     rules_errors = (_read_text(scenario_dir, "env_rules_errors.log") or "").strip()
     if rules_errors:
-        error = f"rules_error: {rules_errors.splitlines()[0][:200]}"
+        # envharness ends the episode when a hook raises (runner.py: Trace(error="env.step raised:
+        # <Type>: <msg>"), success False). Here the call ran on unchanged; keep the outcome the same.
+        error = f"{RULES_ERROR_PREFIX}{rules_exception(rules_errors)}"[:300]
+        success = False
     return Trace(
         episode_id=uuid.uuid4().hex,
         iteration_id=iteration_id,
@@ -342,8 +345,25 @@ def convert(
     )
 
 
-def missing_trace(*, task_idx: int, task_id: str, iteration_id: str, candidate: Candidate, reason: str) -> Trace:
-    """Placeholder for a rollout that produced no result (counted as an error, not a failure)."""
+RULES_ERROR_PREFIX = "env.step raised: "  # envharness runner.py's text for an exception in a hook
+
+
+def rules_exception(log: str) -> str:
+    """The first hook exception in ``env_rules_errors.log`` as ``<Type>: <message>`` (hook named)."""
+    block = log.strip().split("\n\n")[0].splitlines()
+    header = block[0] if block else ""
+    hook = next((h for h in ("filter_action", "modify_transition", "filter_observation", "rules load")
+                 if h in header), "")
+    last = next((line.strip() for line in reversed(block[1:]) if line.strip()), header)
+    return f"{last} (in {hook})" if hook else last
+
+
+def missing_trace(*, task_idx: int, task_id: str, iteration_id: str, candidate: Candidate, reason: str = "",
+                  error: str | None = None) -> Trace:
+    """Placeholder for a rollout that produced no result (counted as an error, not a failure).
+
+    ``error`` replaces the default ``execution_error: <reason>`` text (e.g. the original's
+    ``RulesCodeError: ...`` shape for a rejected rules_code)."""
     return Trace(
         episode_id=uuid.uuid4().hex,
         iteration_id=iteration_id,
@@ -351,5 +371,5 @@ def missing_trace(*, task_idx: int, task_id: str, iteration_id: str, candidate: 
         candidate=candidate,
         rollout_seed=task_idx,
         success=False,
-        error=f"execution_error: {reason}"[:300],
+        error=(error or f"execution_error: {reason}")[:300],
     )

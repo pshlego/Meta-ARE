@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import ast
 import builtins
+import importlib
 import re
+import types
 import shlex
 from collections.abc import Iterable, Sequence
 
@@ -27,10 +29,20 @@ FORBIDDEN_METHODS = frozenset({"reset", "step", "observe", "evaluate", "save_sta
 FORBIDDEN_NAMES = frozenset(
     {
         "open", "eval", "exec", "compile", "__import__", "globals", "locals", "vars",
-        "setattr", "delattr", "input", "breakpoint", "exit", "quit",
+        "setattr", "delattr", "input", "breakpoint", "exit", "quit", "help",
     }
 )
 FORBIDDEN_MODULE_ROOTS = frozenset({"os", "sys", "subprocess", "socket", "shutil", "pathlib", "io", "builtins"})
+# Interpreter internals that lead from any object to frames, code and globals (and so to the
+# real builtins); none of them starts with "_", so the private-name rule alone misses them.
+INTROSPECTION_ATTRS = frozenset(
+    {
+        "gi_frame", "gi_code", "gi_yieldfrom", "cr_frame", "cr_code", "cr_await", "ag_frame", "ag_code",
+        "ag_await", "f_globals", "f_locals", "f_builtins", "f_back", "f_code", "f_trace", "tb_frame",
+        "tb_next", "co_code", "co_consts", "func_globals", "func_code", "modules",
+    }
+)
+SELF_NAMES = frozenset({"self", "cls"})
 APPS = ("calendar", "contacts", "emails", "messages", "chats", "rent-a-flat", "city", "cabs", "shopping", "cloud-drive")
 _SHELL_CHARS = frozenset(";&|<>()")
 
@@ -44,7 +56,8 @@ PRE_BOUND = frozenset({"Rules", "Action", "Blocked", "Observation", "EnvResponse
 _SCENARIO_ID = re.compile(r"scenario_universe_\d+_[0-9a-z]+")
 
 
-# getattr/hasattr are allowed: the container binds versions that refuse "_"-prefixed names.
+# getattr/hasattr are allowed with a literal public name; the container binds versions that refuse
+# "_"-prefixed names. Messages lead with the cause: the designer sees only ~40 characters of them.
 
 
 class RulesCheckError(ValueError):
@@ -56,48 +69,89 @@ def check_rules_code(code: str, *, forbidden_ids: Iterable[str] = ()) -> None:
     if not code.strip():
         return  # pass-through
     if len(code.encode("utf-8")) > MAX_BYTES:
-        raise RulesCheckError(f"rules_code is larger than {MAX_BYTES} bytes")
+        raise RulesCheckError(f"over {MAX_BYTES} bytes ({len(code.encode('utf-8'))}); shorten rules_code")
     _no_identifiers(code, forbidden_ids, "rules_code")
     try:
         tree = ast.parse(code)
     except SyntaxError as exc:
-        raise RulesCheckError(f"rules_code does not parse: {exc}") from exc
+        raise RulesCheckError(f"syntax error: {exc}") from exc
 
     rules_class = next(
         (node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "_Rules"), None
     )
     if rules_class is None:
-        raise RulesCheckError("rules_code must define `class _Rules(Rules):`")
+        raise RulesCheckError("no `class _Rules(Rules):` in rules_code")
     if not any(isinstance(base, ast.Name) and base.id == "Rules" for base in rules_class.bases):
         raise RulesCheckError("_Rules must subclass Rules")
     methods = {item.name for item in rules_class.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))}
     bad = sorted(methods & FORBIDDEN_METHODS)
     if bad:
-        raise RulesCheckError(f"_Rules may override only {sorted(HOOKS)}; remove {bad}")
+        raise RulesCheckError(f"overrides {bad}; _Rules may override only {sorted(HOOKS)}")
 
+    direct_calls = {id(node.func) for node in ast.walk(tree)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in ("getattr", "hasattr")}
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else [node.module or ""]
             for name in names:
                 if name.split(".")[0] not in ALLOWED_IMPORTS:
-                    raise RulesCheckError(f"rules_code may import only {sorted(ALLOWED_IMPORTS)}; got `{name}`")
+                    raise RulesCheckError(f"import `{name}` not allowed; only {sorted(ALLOWED_IMPORTS)}")
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    _check_attribute(alias.name, owner="")
         elif isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
-            raise RulesCheckError(f"rules_code may not use `{node.id}`")
+            raise RulesCheckError(f"`{node.id}` is forbidden in rules_code")
         elif isinstance(node, ast.Name) and node.id.startswith("__"):
-            raise RulesCheckError(f"rules_code may not use dunder name `{node.id}`")
-        elif isinstance(node, ast.Attribute) and node.attr.startswith("__") and node.attr.endswith("__"):
-            raise RulesCheckError(f"rules_code may not access dunder attribute `{node.attr}`")
+            raise RulesCheckError(f"dunder name `{node.id}` is forbidden")
         elif isinstance(node, ast.Name) and node.id in FORBIDDEN_MODULE_ROOTS:
-            raise RulesCheckError(f"rules_code may not reference `{node.id}`")
+            raise RulesCheckError(f"`{node.id}` is forbidden in rules_code")
+        elif isinstance(node, ast.Name) and node.id in ("getattr", "hasattr") and id(node) not in direct_calls:
+            raise RulesCheckError(f"`{node.id}` may only be called directly")
+        elif isinstance(node, ast.Call) and id(node.func) in direct_calls:
+            name = node.args[1] if len(node.args) > 1 else None
+            if not (isinstance(name, ast.Constant) and isinstance(name.value, str)):
+                raise RulesCheckError(f"{node.func.id}() needs a literal attribute name")
+            _check_attribute(name.value, owner="")
+        elif isinstance(node, ast.Attribute):
+            owner = node.value.id if isinstance(node.value, ast.Name) else ""
+            _check_attribute(node.attr, owner=owner)
 
     undefined = _undefined_names(tree)
     if undefined:
         name = undefined[0]
         hint = f"add `import {name}` at the top of rules_code" if name in ALLOWED_IMPORTS else "define it first"
         raise RulesCheckError(
-            f"rules_code uses `{name}` but never defines or imports it (NameError at run time; only "
-            f"{sorted(PRE_BOUND - {'getattr', 'hasattr'})} are pre-bound): {hint}"
+            f"`{name}` undefined: {hint} (NameError at run time; only "
+            f"{sorted(PRE_BOUND - {'getattr', 'hasattr'})} are pre-bound)"
         )
+
+
+def _module_attributes() -> frozenset[str]:
+    """Public attribute names under which an allowed module exposes another module
+    (``json.codecs``, ``textwrap.re``, ...). Blocked on any object, so aliasing
+    (``m = json; m.codecs``) does not reach them either."""
+    names = set()
+    for root in ALLOWED_IMPORTS:
+        module = importlib.import_module(root)
+        names.update(n for n in dir(module) if not n.startswith("_") and isinstance(getattr(module, n), types.ModuleType))
+    return frozenset(names | {"sre_compile", "sre_parse", "sre_constants"})  # older interpreters
+
+
+MODULE_ATTRS = _module_attributes()
+
+
+def _check_attribute(attr: str, *, owner: str) -> None:
+    """Attribute rules: no private/dunder names (except self's own), no interpreter internals,
+    and no module reached through an allowed module (``json.codecs`` -> ``codecs.open``)."""
+    if attr.startswith("__"):
+        raise RulesCheckError(f"dunder attribute `.{attr}` is forbidden")
+    if attr.startswith("_") and owner not in SELF_NAMES:
+        raise RulesCheckError(f"private attribute `.{attr}` is forbidden (only self._x)")
+    if attr in INTROSPECTION_ATTRS or attr in FORBIDDEN_MODULE_ROOTS:
+        raise RulesCheckError(f"attribute `.{attr}` is forbidden")
+    if attr in MODULE_ATTRS:
+        raise RulesCheckError(f"module attribute `.{attr}` is forbidden; call functions only")
 
 
 def _undefined_names(tree: ast.AST) -> list[str]:
@@ -151,4 +205,4 @@ def setup_commands(actions: Sequence[Action], *, forbidden_ids: Iterable[str] = 
 
 def _no_identifiers(text: str, forbidden_ids: Iterable[str], what: str) -> None:
     if _SCENARIO_ID.search(text) or any(sid and sid in text for sid in forbidden_ids):
-        raise RulesCheckError(f"{what} must not reference GAIA2 scenario identifiers")
+        raise RulesCheckError(f"GAIA2 scenario identifier in {what}")

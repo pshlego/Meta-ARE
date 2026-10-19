@@ -103,7 +103,7 @@ def test_rules_check_failure_is_an_error_trace_without_rollouts(tmp_path):
     orch = _orchestrator(tmp_path, ScriptedHarnessAgent(lambda k, p: Candidate()), runner, task_cases, [0])
     bad = Candidate(rules_code="import os\nclass _Rules(Rules):\n    pass\n")
     traces = orch._run(0, bad, iteration_id="it", out_dir=tmp_path / "cand")
-    assert len(traces) == 3 and all(t.error.startswith("execution_error: RulesCheckError") for t in traces)
+    assert len(traces) == 3 and all(t.error.startswith("RulesCheckError: import `os` not allowed") for t in traces)
     assert runner.calls == [] and (tmp_path / "cand" / "rules_check_error.txt").is_file()
     shell = Candidate(in_env_actions=[Action(name="exec", kwargs={"command": "contacts get-contacts; rm -rf /"})])
     assert all(t.error for t in orch._run(0, shell, iteration_id="it", out_dir=tmp_path / "c2")) and runner.calls == []
@@ -133,4 +133,4 @@ def test_rules_error_survives_the_stall_mapping(tmp_path):
     (path / "env_rules_errors.log").write_text("[t] contacts filter_action raised; running unchanged\nTraceback ...\n")
     stalled = ScenarioResult("scenario_universe_29_t0", 0, "task_failure", None, path, "h", None, "agent stalled")
     trace = orch._trace(stalled, 0, task_cases[0], Candidate(), "it")
-    assert trace.error.startswith("rules_error: [t] contacts filter_action raised")
+    assert trace.error == "env.step raised: Traceback ... (in filter_action)" and trace.success is False
