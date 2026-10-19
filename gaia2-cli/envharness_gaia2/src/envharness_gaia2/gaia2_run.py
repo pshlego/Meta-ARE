@@ -387,8 +387,12 @@ def disposition_of(
     if success is False:
         return "task_failure", "judge rejected"
     error = str(result.get("error") or "")
-    reachable = any(status == 200 for status in llm_statuses_)
-    if reachable and (result.get("timed_out") or any(marker in error for marker in _AGENT_STALL_MARKERS)):
+    statuses = [status for status in llm_statuses_ if status is not None]
+    if statuses and statuses[-1] != 200:
+        # The student stopped because its LLM endpoint failed (e.g. HTTP 502 during an
+        # outage), not because it gave up: infrastructure, so the runner retries it.
+        return "execution_error", f"infrastructure: last LLM call HTTP {statuses[-1]}; {error[:200]}"
+    if 200 in statuses and (result.get("timed_out") or any(marker in error for marker in _AGENT_STALL_MARKERS)):
         return "task_failure", f"agent stalled: {error[:200]}"
     return "execution_error", f"infrastructure: {error[:200] or 'no judgment'}"
 

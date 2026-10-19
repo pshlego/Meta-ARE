@@ -64,6 +64,10 @@ def test_disposition_requires_matching_digests():
     stalled = {"success": None, "harness_digest": "h", "error": "No judgment (no turn boundary detected)"}
     assert disposition_of(stalled, [200], {"digest": "h"}, "h", None)[0] == "task_failure"
     assert disposition_of(stalled, [], {"digest": "h"}, "h", None)[0] == "execution_error"
+    # stalled because the LLM endpoint failed mid-rollout (envh3n r1/task_003): infrastructure
+    outage = disposition_of(stalled, [200, 200, 502, 502], {"digest": "h"}, "h", None)
+    assert outage[0] == "execution_error" and "HTTP 502" in outage[1]
+    assert disposition_of(stalled, [502, 502, 200, None], {"digest": "h"}, "h", None)[0] == "task_failure"
 
 
 def test_interventions_attach_by_exact_argv_and_rules_errors_mark_the_trace(tmp_path):

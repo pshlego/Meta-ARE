@@ -40,7 +40,7 @@ run:
   health_timeout_seconds: 180
   process_completion_grace_seconds: 60
   max_concurrent: 5
-  infrastructure_retries: 1
+  infrastructure_retries: 3
   eval_repetitions: 1              # the paper attempts each evaluation instance once
 
 optimizer_llm:                     # designer + skill induction
