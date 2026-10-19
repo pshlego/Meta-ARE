@@ -18,8 +18,12 @@ Co-evolution (``coevolution.rounds`` > 1) chains original parts only: round r's
 student carries ``bank_{r-1}`` in its skills, and round r's bank adds the new
 lessons of the augment-mode build (``--existing-bank``); with ``retrieval`` the
 student of each round r task carries the top-k of ``bank_{r-1}`` for that task. ``rounds: 1`` is the
-original single pass. Tasks, round banks and eval arms commit with DONE
-markers, so ``--resume`` continues where the run stopped.
+original single pass. With ``coevolution.batch_size`` each round runs its own
+disjoint batch of train tasks; with ``evaluation.per_round`` each round's bank is
+evaluated on the dev manifest right after the round. Eval results are only written
+to ``eval/`` and never reach the designer or the induction LLM. Tasks and round
+banks commit with DONE markers and eval arms in ``eval/summary.json``, so
+``--resume`` continues where the run stopped.
 """
 
 from __future__ import annotations
@@ -104,6 +108,10 @@ class Pipeline:
     def _save_state(self) -> None:
         self.state_path.write_text(json.dumps(self.state, indent=2) + "\n", encoding="utf-8")
 
+    def _spent(self) -> int:
+        """Rollouts that count against ``budget.max_rollouts``."""
+        return self.state["rollouts"] + (self.state["eval_rollouts"] if self.cfg.budget_includes_eval else 0)
+
     def _count(self, before: int, key: str = "rollouts") -> None:
         self.state[key] += self.gaia2.rollouts - before
         self._save_state()
@@ -133,7 +141,11 @@ class Pipeline:
         if not (self.run_dir / "seed_harness.digest").is_file():
             self.state["seed_digest"] = self._render([], seed_dir)
             self._save_state()
-        if self.state["stopped"] and self.state["rollouts"] < self.cfg.max_rollouts:
+        if self.cfg.batch_size is not None:
+            (self.run_dir / "batches.json").write_text(json.dumps({
+                f"r{r}": [self.cfg.train_cases[t].scenario_id for t in self.cfg.round_tasks(r)]
+                for r in range(1, self.cfg.rounds + 1)}, indent=2) + "\n", encoding="utf-8")
+        if self.state["stopped"] and self._spent() < self.cfg.max_rollouts:
             # resumed with a raised budget: continue where the cap stopped the run
             self.state.update(stopped=None, max_rollouts=self.cfg.max_rollouts)
             self._save_state()
@@ -147,6 +159,8 @@ class Pipeline:
             if self.retriever is None:
                 harness = round_dir / "harness"
             bank = load_bank(self.run_dir / "banks" / f"ours_r{round_no}.jsonl")
+            if self.cfg.per_round_eval:
+                self.evaluate()  # this round's bank (and nobank/orig after round 1) on the dev manifest
             if self.state["stopped"]:
                 break
         summary = self.evaluate()  # updates eval_rollouts: evaluate before snapshotting the state
@@ -158,7 +172,7 @@ class Pipeline:
         input_digest = harness_digest(self.cfg, harness) if self.retriever is None else None
         input_bank = bank_sha256(self.run_dir / "banks" / f"ours_r{round_no - 1}.jsonl") if round_no > 1 else None
         traces_by_task = self.corpus(round_no, round_dir / "corpus", harness, prior_bank)
-        if len(traces_by_task) < len(self.cfg.train_cases):
+        if len(traces_by_task) < len(self.cfg.round_tasks(round_no)):
             return  # stopped by the budget; --resume with a larger budget.max_rollouts finishes the round
 
         bank_cfg = self.cfg.bank
@@ -209,10 +223,10 @@ class Pipeline:
     def corpus(self, round_no: int, corpus_dir: Path, harness: Path, prior_bank=()) -> dict[str, list[dict]]:
         cfg = self.cfg
         out: dict[str, list[dict]] = {}
-        for task_id in range(len(cfg.train_cases)):
+        for task_id in cfg.round_tasks(round_no):
             task_dir = corpus_dir / f"task_{task_id:03d}"
             if not (task_dir / "DONE").is_file():
-                if self.state["rollouts"] >= cfg.max_rollouts:
+                if self._spent() >= cfg.max_rollouts:
                     self.state["stopped"] = f"budget (round {round_no}, before task {task_id})"
                     self._save_state()
                     break
@@ -290,7 +304,9 @@ class Pipeline:
 
     # -- Stage 3 -----------------------------------------------------------------------
     def evaluate(self) -> dict:
+        """Evaluate every arm not yet in ``eval/summary.json`` (committed arms are kept as they are)."""
         out = self.run_dir / "eval"
+        done = json.loads((out / "summary.json").read_text(encoding="utf-8")) if (out / "summary.json").is_file() else {}
         seed = self.run_dir / "seed_harness"
         arms = {"nobank": Arm(lambda case: (seed, []), 0)}
         banks: dict[str, tuple[Path, Path | None]] = {}  # arm -> (bank file, whole-bank harness)
@@ -312,10 +328,15 @@ class Pipeline:
             else:
                 root = out / "harnesses" / name
                 arms[name] = Arm(lambda case, b=items, r=root: self._student_harness(b, case, r), len(items))
+        todo = {name: arm for name, arm in arms.items() if name not in done}
+        if not todo:
+            return done
         before = self.gaia2.rollouts
-        summary = evaluate(self.gaia2, self.cfg.dev_cases, arms=arms, k=self.cfg.eval_repetitions, out_dir=out,
-                           digest_fn=lambda d: harness_digest(self.cfg, d), max_concurrent=self.cfg.run.max_concurrent)
+        new = evaluate(self.gaia2, self.cfg.dev_cases, arms=todo, k=self.cfg.eval_repetitions, out_dir=out,
+                       digest_fn=lambda d: harness_digest(self.cfg, d), max_concurrent=self.cfg.run.max_concurrent)
         self._count(before, "eval_rollouts")
+        summary = {name: {**done, **new}[name] for name in arms if name in done or name in new}
+        (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         return summary
 
 

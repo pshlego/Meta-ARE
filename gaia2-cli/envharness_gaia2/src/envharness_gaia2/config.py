@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +48,16 @@ _SECTIONS: dict[str, set[str] | None] = {
 # Optional sections. Without ``retrieval`` the whole bank is rendered into skills/; without
 # ``injection`` items go in as SKILL.md files; without ``evaluation`` the orig arm is evaluated.
 _OPTIONAL = {"retrieval", "injection", "evaluation"}
+# Optional keys inside a section (absent = the behaviour before they existed):
+#   coevolution.batch_size  each round runs its own disjoint batch of train tasks (absent: every round runs all)
+#   coevolution.batch_seed  shuffle the train manifest with this seed before batching (null: manifest order)
+#   evaluation.per_round    evaluate each round's bank on the dev manifest as soon as the round is committed
+#   budget.include_eval     budget.max_rollouts counts eval rollouts too (absent: corpus rollouts only)
+_OPTIONAL_KEYS: dict[str, set[str]] = {
+    "coevolution": {"batch_size", "batch_seed"},
+    "evaluation": {"per_round"},
+    "budget": {"include_eval"},
+}
 
 
 class ConfigError(ValueError):
@@ -118,6 +129,19 @@ class Config:
     retrieval: RetrievalConfig | None = None  # None: the whole bank goes into skills/
     injection: InjectionConfig = InjectionConfig()
     orig_arm: bool = True  # evaluate the bank induced from unmutated baseline rollouts (the original's ablation)
+    batch_size: int | None = None  # None: every round runs every train task
+    batch_seed: int | None = None  # None: batches follow the train manifest order
+    per_round_eval: bool = False  # evaluate ours_r<r> right after round r (else once, after the last round)
+    budget_includes_eval: bool = False  # max_rollouts caps corpus + eval rollouts (else corpus only)
+
+    def round_tasks(self, round_no: int) -> list[int]:
+        """Indices into ``train_cases`` that round ``round_no`` runs."""
+        if self.batch_size is None:
+            return list(range(len(self.train_cases)))
+        order = list(range(len(self.train_cases)))
+        if self.batch_seed is not None:
+            random.Random(self.batch_seed).shuffle(order)
+        return sorted(order[(round_no - 1) * self.batch_size: round_no * self.batch_size])
 
     @property
     def forbidden_ids(self) -> tuple[str, ...]:
@@ -137,8 +161,10 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
         if keys is None or section not in raw:
             continue
         value = raw[section]
-        if not isinstance(value, dict) or set(value) != keys:
-            raise ConfigError(f"[{section}] must have exactly {sorted(keys)}; got {sorted(value or {})}")
+        optional = _OPTIONAL_KEYS.get(section, set())
+        if not isinstance(value, dict) or not keys <= set(value) <= keys | optional:
+            raise ConfigError(f"[{section}] must have {sorted(keys)} (optional {sorted(optional)}); "
+                              f"got {sorted(value or {})}")
     if raw["schema_version"] != SCHEMA_VERSION:
         raise ConfigError(f"schema_version must be {SCHEMA_VERSION}")
     if raw["container_runtime"] != "docker":
@@ -227,12 +253,25 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
     if injection.mode == "prompt" and retrieval is None:
         raise ConfigError("injection.mode prompt pastes the retrieved top-k (as the original evals do): "
                           "add a retrieval section")
-    orig_arm = (raw.get("evaluation") or {"orig_arm": True})["orig_arm"]
-    if not isinstance(orig_arm, bool):
-        raise ConfigError("evaluation.orig_arm must be true or false")
-    rounds = int(raw["coevolution"]["rounds"])
+    evaluation = raw.get("evaluation") or {"orig_arm": True}
+    orig_arm, per_round_eval = evaluation["orig_arm"], evaluation.get("per_round", False)
+    include_eval = budget.get("include_eval", False)
+    for name, flag in (("evaluation.orig_arm", orig_arm), ("evaluation.per_round", per_round_eval),
+                       ("budget.include_eval", include_eval)):
+        if not isinstance(flag, bool):
+            raise ConfigError(f"{name} must be true or false")
+    coevo = raw["coevolution"]
+    rounds = int(coevo["rounds"])
     if rounds < 1:
         raise ConfigError("coevolution.rounds must be >= 1 (1 = the original single pass)")
+    batch_size = coevo.get("batch_size")
+    batch_seed = coevo.get("batch_seed")
+    if batch_size is not None:
+        if not isinstance(batch_size, int) or batch_size < 1 or rounds * batch_size > len(train):
+            raise ConfigError(f"coevolution.batch_size must be an int >= 1 with rounds x batch_size <= "
+                              f"{len(train)} train tasks (disjoint batches)")
+    if batch_seed is not None and (batch_size is None or not isinstance(batch_seed, int)):
+        raise ConfigError("coevolution.batch_seed must be an int, and needs batch_size")
     return Config(
         path=path,
         raw=raw,
@@ -269,6 +308,10 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
         retrieval=retrieval,
         injection=injection,
         orig_arm=orig_arm,
+        batch_size=batch_size,
+        batch_seed=batch_seed,
+        per_round_eval=per_round_eval,
+        budget_includes_eval=include_eval,
     )
 
 

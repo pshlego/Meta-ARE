@@ -98,7 +98,7 @@ def test_two_rounds_resume_and_eval(tmp_path, mode):
     calls_before = len(runner.calls)
     again = Pipeline(cfg, run_dir, gaia2=runner, designer_client=_designer(), induce_client=_inducer([]),
                      embedder=lambda texts: [[1.0, 0.0] for _ in texts]).run()
-    assert len(runner.calls) - calls_before == len(summary)  # eval reuses runner caching only in the real runner
+    assert len(runner.calls) == calls_before  # eval arms commit in eval/summary.json
     assert again["rollouts"] == result["rollouts"]
 
 
@@ -198,3 +198,74 @@ def test_eval_success_rate_counts_errors_as_failures(tmp_path):
     summary = evaluate(Runner(), make_cases(tmp_path, 4), arms={"a": Arm(lambda c: (tmp_path, []), 0)}, k=1,
                        out_dir=tmp_path / "eval", digest_fn=lambda d: "d", max_concurrent=2)
     assert summary["a"]["valid"] == 3 and summary["a"]["attempts"] == 4 and summary["a"]["success_rate"] == 0.75
+
+
+def test_disjoint_batches_per_round_eval_and_total_budget(tmp_path):
+    """Full-run layout: each round its own batch, the round's bank evaluated at once, eval in the cap;
+    the designer and the induction LLM never see a dev scenario."""
+    path = _config(tmp_path, **{"coevolution.rounds": 2, "budget.max_rollouts": 1000})
+    raw = yaml.safe_load(path.read_text())
+    raw["coevolution"].update(batch_size=3, batch_seed=7)
+    raw["evaluation"] = {"orig_arm": False, "per_round": True}
+    raw["budget"]["include_eval"] = True
+    path.write_text(yaml.safe_dump(raw))
+    cfg = load_config(path, verify_image=False)
+    r1, r2 = cfg.round_tasks(1), cfg.round_tasks(2)
+    assert len(r1) == len(r2) == 3 and not set(r1) & set(r2) and r1 != [0, 1, 2]  # seeded shuffle
+    run_dir = cfg.run_root / "b"
+    run_dir.mkdir(parents=True)
+    runner, seen = FakeGaia2Runner(_outcome), []
+    designer, inducer = _designer(), _inducer(seen)
+    respond = designer.responder
+
+    def logging_designer(messages, tools):
+        seen.extend(str(m.content) for m in messages)
+        return respond(messages, tools)
+
+    designer.responder = logging_designer
+    order = []
+    real = Pipeline.evaluate
+
+    def spy(self):
+        order.append(sorted(p.name for p in (run_dir / "rounds").glob("r*") if (p / "DONE").is_file()))
+        return real(self)
+
+    Pipeline.evaluate = spy
+    try:
+        result = Pipeline(cfg, run_dir, gaia2=runner, designer_client=designer, induce_client=inducer,
+                          embedder=lambda texts: [[1.0, 0.0] for _ in texts]).run()
+    finally:
+        Pipeline.evaluate = real
+    for r, tasks in ((1, r1), (2, r2)):
+        assert sorted(int(p.parent.name[5:]) for p in (run_dir / "rounds" / f"r{r}" / "corpus").glob("task_*/DONE")) == tasks
+    batches = json.loads((run_dir / "batches.json").read_text())
+    assert batches["r1"] == [cfg.train_cases[t].scenario_id for t in r1]
+    assert order[0] == ["r1"] and order[1] == ["r1", "r2"]  # evaluated right after each round
+    assert set(result["eval"]) == {"nobank", "ours_r1", "ours_r2"}
+    eval_calls = [c for c in runner.calls if c["rules"] is None and set(c["cases"]) <= {d.scenario_id for d in cfg.dev_cases}]
+    assert len(eval_calls) == 3  # each arm once, never re-run
+    assert result["eval_rollouts"] == 3 * len(cfg.dev_cases)
+    dev_ids = {d.scenario_id for d in cfg.dev_cases}
+    assert seen and not any(i in text for text in seen for i in dev_ids)
+    assert not any("eval" in text and "summary" in text for text in seen)
+
+
+def test_total_budget_counts_eval(tmp_path):
+    path = _config(tmp_path, **{"budget.max_rollouts": 7})
+    raw = yaml.safe_load(path.read_text())
+    raw["budget"]["include_eval"] = True
+    raw["coevolution"]["batch_size"] = 2
+    raw["evaluation"] = {"orig_arm": False, "per_round": True}
+    path.write_text(yaml.safe_dump(raw))
+    cfg = load_config(path, verify_image=False)
+    run_dir = cfg.run_root / "t"
+    run_dir.mkdir(parents=True)
+    result = _pipeline(cfg, run_dir, FakeGaia2Runner(_outcome), []).run()
+    # round 1 (2 tasks x 6) passes the cap; its bank is still evaluated, then the run stops before round 2
+    assert result["stopped"].startswith("budget (round 2") and set(result["eval"]) == {"nobank", "ours_r1"}
+    for bad in ({"batch_size": 4}, {"batch_size": 0}, {"batch_seed": 3}):
+        broken = yaml.safe_load(_config(tmp_path).read_text())
+        broken["coevolution"].update(bad)
+        path.write_text(yaml.safe_dump(broken))
+        with pytest.raises(ConfigError):
+            load_config(path, verify_image=False)

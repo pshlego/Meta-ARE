@@ -1,0 +1,98 @@
+# EnvHarness on GAIA2 with OpenClaw (plan v2), FULL RUN: 75 train tasks in 25 disjoint batches of 3
+# (one batch per co-evolution round), each round's bank evaluated on the 65 dev scenarios right after the round.
+# Execution values follow /mnt/data2/Auto_Saddler/sandbox/AutoSaddler/configs/v2/meta_are_autosaddler_smoke_cloudgpt.yaml
+# and AutoSaddler configs/v2/gaia2_openclaw_autosaddler_smoke_cloudgpt.yaml; EnvHarness values follow the
+# original experiments/swebench corpus (K=5, band [0.4, 0.6], max_k 5; smoke: max_k 1 like corpus_smoke.yaml).
+schema_version: envharness-gaia2/v2
+
+meta_are_repo: /mnt/data2/v-parksungho_icml/Meta-ARE        # feat/gaia2-openclaw-envharness
+seed_harness_dir: gaia2-cli/harness/openclaw                 # the student's harness; only skills/ gets the bank
+harness_policy: gaia2-cli/envharness_gaia2/configs/harness_policy_skillbank.json
+image: localhost/gaia2-oc:envh-8a84c2288667                  # + rules sandbox, quiet hooks (8a84c2288667)
+image_id: sha256:5353193f41cd52a3c0f530cc0c5584dc77652d522518e8b37bf0e4beecde56bd
+container_runtime: docker
+docker_group: docker
+
+data:
+  dataset_root: /mnt/data2/v-parksungho_icml/Meta-ARE/datasets_local/gaia2_cli_full
+  dataset_source_descriptor: /mnt/data2/v-parksungho_icml/Meta-ARE/datasets_local/gaia2_cli_full/.autosaddler-gaia2-cli-source.json
+  dataset_source_revision: 240ac47bfc62b24c934f95d014ffa5a3cab8b04c
+  train_manifest: /mnt/data2/v-parksungho_icml/AutoSaddler/configs/datasets/GAIA2/train.json     # 75 (Universe 29)
+  development_manifest: /mnt/data2/v-parksungho_icml/AutoSaddler/configs/datasets/GAIA2/val.json  # 65 (Universe 30, held-out eval)
+  test_manifest: /mnt/data2/v-parksungho_icml/AutoSaddler/configs/datasets/GAIA2/test_universe_22.json  # frozen holdout, not opened
+
+task_agent:
+  provider: azure
+  model: gpt-5.5-20260424
+  base_url: https://cloudgpt-openai.azure-api.net/openai/
+  reasoning_effort: xhigh
+  thinking: high
+  azure_config_dir: /mnt/data2/v-parksungho/cloudgpt-account
+judge:
+  provider: azure
+  model: Llama-3.3-70B-Instruct
+  base_url: https://cloudgpt-openai.azure-api.net/openai/
+  time_check: "off"
+
+run:
+  scenario_timeout_seconds: 1800
+  max_scenario_duration: 7200
+  health_timeout_seconds: 180
+  process_completion_grace_seconds: 60
+  max_concurrent: 5
+  infrastructure_retries: 3
+  eval_repetitions: 1              # the paper attempts each evaluation instance once
+
+optimizer_llm:                     # designer + skill induction
+  model: gpt-5.5
+  api_base: http://127.0.0.1:4148/v1
+  wire_api: responses              # gpt-5.5 is served only on /responses there
+  reasoning_effort: xhigh          # designer
+  induce_reasoning_effort: low     # induction (original: temperature 0, reasoning_effort minimal)
+
+envrigger:                         # experiments/swebench/corpus.yaml
+  k_per_candidate: 5
+  max_k: 5                         # experiments/swebench/corpus.yaml
+  target_band: [0.4, 0.6]
+  skip_passthrough_candidates: true
+
+bank:
+  mode: alfworld_pair              # scripts/induce_pair.py (ALFWorld); swebench_cascade = experiments/swebench/bank_distillation
+                                   # the keys below are the swebench_cascade defaults (alfworld_pair, like induce_pair, does not dedup
+                                   # within a round; dedup_titles applies to the merged bank across rounds)
+  max_pairs_per_task: 5
+  max_baseline_rollouts: 5
+  tier2_last_only: true
+  dedup_titles: true
+  embed_model: text-embedding-3-small
+  concurrency: 4
+  orig_seed: 0
+
+retrieval:                         # every original eval injects Bank.retrieve top-k (ALFWorld/SpreadsheetBench:
+  top_k: 5                         # top-5 MMR, lambda 0.5); query = the scenario's first user request.
+  mode: mmr                        # Round r>=2 students and every eval scenario get their own top-5.
+  mmr_lambda: 0.5
+
+injection:                         # how the retrieved items reach the student
+  mode: prompt                     # prompt: pasted into AGENTS.md with the original memory block (header, per-step
+                                   #   gate, "### Insight i"; experiments/alfworld build_memory_block), as every original
+                                   #   eval injects its top-k | skill_md: one OpenClaw SKILL.md per item (student opens them)
+  style: soft                      # build_memory_block style (alfworld reasoning_bank_eval.yaml inject_style: soft)
+
+evaluation:
+  orig_arm: false                  # control = nobank (the seed harness, no skills); true adds the original's "orig"
+                                   #   ablation (bank induced from unmutated baseline rollouts)
+  per_round: true                  # ours_r<r> on the dev manifest right after round r (results stay in eval/;
+                                   #   the designer and induction never see them)
+
+coevolution:
+  rounds: 25                       # 1 = the original single pass
+  batch_size: 3                    # round r runs its own 3 train tasks (25 x 3 = all 75, each once)
+  batch_seed: 42                   # shuffle the manifest (it is grouped by capability) before batching
+
+budget:
+  max_rollouts: 5000               # corpus + eval; expected ~3.5-4k (corpus <= 25 x 3 x 30, eval 26 x 65)
+  include_eval: true
+
+storage:
+  run_root: /mnt/data2/v-parksungho_icml/working_dir/outputs/envharness_gaia2/runs
