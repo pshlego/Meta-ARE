@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from envharness_gaia2.skills import TEMPLATE, injected_titles
+
 # "oracle_function" is a key of every app's public `<app> schema` output (the agent sees it too),
 # not oracle data; it may also appear cut short ("oracle_f") where long tool outputs are truncated.
 # Every other "oracle" occurrence counts.
@@ -226,16 +228,28 @@ class Report:
         seed = self.run / "seed_harness"
         retrieval = self.config.get("config", {}).get("retrieval")
         top_k = int(retrieval["top_k"]) if retrieval else None
+        injection = (self.config.get("config", {}).get("injection") or {}).get("mode", "skill_md")
+        seed_template = (seed / TEMPLATE).read_text(encoding="utf-8") if (seed / TEMPLATE).is_file() else ""
+
+        def template_ok(harness: Path) -> bool:
+            """prompt injection: AGENTS_TEMPLATE.md = the seed's + the original memory block, nothing else."""
+            text = (harness / TEMPLATE).read_text(encoding="utf-8")
+            extra = text[len(seed_template.rstrip("\n")):] if text.startswith(seed_template.rstrip("\n")) else None
+            return extra is not None and extra.lstrip("\n").startswith(("Below are some memory items",
+                                                                          "The following are reasoning insights"))
 
         def harness_ok(harness: Path) -> tuple[bool, str]:
             check = subprocess.run([sys.executable, str(tool), "check", str(harness), "--policy", str(policy)],
                                    capture_output=True, text=True)
             outside = [p.relative_to(seed).as_posix() for p in seed.rglob("*")
                        if p.is_file() and p.relative_to(seed).parts[0] != "skills"
-                       and not filecmp.cmp(p, harness / p.relative_to(seed), shallow=False)]
-            return check.returncode == 0 and not outside, (
+                       and not filecmp.cmp(p, harness / p.relative_to(seed), shallow=False)
+                       and not (injection == "prompt" and p.name == TEMPLATE and template_ok(harness))]
+            skill_files = list(harness.glob("skills/*/SKILL.md"))
+            mixed = injection == "prompt" and bool(skill_files)
+            return check.returncode == 0 and not outside and not mixed, (
                 f"harness check {'ok' if check.returncode == 0 else check.stderr.strip()}, "
-                f"non-skill diffs {outside or 'none'}")
+                f"non-skill diffs {outside or 'none'}" + (", SKILL.md files in prompt mode" if mixed else ""))
 
         lines, ok = [], True
         for round_dir in self.rounds:
@@ -262,11 +276,11 @@ class Report:
             bad = []
             for harness in harnesses:
                 good, detail = harness_ok(harness)
-                n = len(list(harness.glob("skills/*/SKILL.md")))
+                n = len(injected_titles(harness))
                 if not good or not 1 <= n <= top_k:
                     bad.append(f"{harness.relative_to(self.run)}: {n} skills, {detail}")
-            lines.append(f"- retrieval top_k={top_k} ({retrieval.get('mode')}, lambda {retrieval.get('mmr_lambda')}): "
-                         f"{len(harnesses)} per-scenario harnesses rendered, bad: {bad or 'none'}")
+            lines.append(f"- retrieval top_k={top_k} ({retrieval.get('mode')}, lambda {retrieval.get('mmr_lambda')}), "
+                         f"injection {injection}: {len(harnesses)} per-scenario harnesses rendered, bad: {bad or 'none'}")
             ok &= not bad
         orig = _jsonl(self.run / "banks" / "orig.jsonl")
         lines.append(f"- orig bank: {len(orig)} items")
@@ -303,7 +317,10 @@ class Report:
                 text_of.setdefault(trace.parent.name, []).append(trace.read_text(encoding="utf-8", errors="replace"))
             listed = total = 0
             for sid, harness in (data.get("case_harness") or {}).items():
-                names = [p.parent.name for p in Path(harness).glob("skills/*/SKILL.md")]
+                if injection == "prompt":  # each pasted insight title, as the JSON trace spells it
+                    names = [json.dumps(title)[1:-1] for title in injected_titles(Path(harness))]
+                else:
+                    names = [p.parent.name for p in Path(harness).glob("skills/*/SKILL.md")]
                 text = "\n".join(text_of.get(sid, []))
                 total += len(names)
                 listed += sum(1 for name in names if name in text)
@@ -321,7 +338,8 @@ class Report:
             ok &= listed == total and bool(data.get("digest_ok"))
         for record in self.lineage[1:]:
             lines.append(f"- round {record['round']} augment-mode new items: {len(record.get('new_items', []))}")
-        lines.append(f"- student read a SKILL.md in eval: {cat_seen}")
+        lines.append(f"- student read a SKILL.md in eval: {cat_seen}" if injection == "skill_md"
+                     else "- injection prompt: the top-k is pasted into AGENTS.md (no SKILL.md to read)")
         self.add("6. Injection and co-evolution", ok, lines)
 
     # 7 ---------------------------------------------------------------------------
@@ -335,7 +353,8 @@ class Report:
             ids = len(_SCENARIO_ID.findall(text))
             lines.append(f"- {name}: {counts}, scenario ids: {ids}")
             ok &= not any(counts[term] for term in LEAK_TERMS) and ids == 0
-        skills_text = "\n".join(p.read_text() for p in self.run.rglob("skills/*/SKILL.md"))
+        skills_text = "\n".join(p.read_text() for p in (*self.run.rglob("skills/*/SKILL.md"),
+                                                        *self.run.rglob(TEMPLATE)))
         skill_ids = len(_SCENARIO_ID.findall(skills_text))
         lines.append(f"- scenario ids in rendered skills: {skill_ids}")
         self.add("7. No oracle/scenario leakage into optimizer inputs or skills", ok and skill_ids == 0, lines)
@@ -351,7 +370,9 @@ class Report:
         for name, data in self.eval.items():
             per_case = {sid: [r["success"] for r in rs] for sid, rs in data.get("cases", {}).items()}
             rows.append(f"| {name} | {data.get('n_skills')} | {data.get('valid')}/{data.get('attempts')} | {data.get('success_rate')} | {per_case} |")
-        expected_arms = {"nobank", "orig", *(f"ours_{r.name}" for r in self.rounds)}
+        orig_arm = (self.config.get("config", {}).get("evaluation") or {}).get("orig_arm", True)
+        expected_arms = {"nobank", *(["orig"] if orig_arm else []),
+                         *(f"ours_{r.name}" for r in self.rounds if (r / "DONE").is_file())}
         valid = set(self.eval) == expected_arms and all(data.get("valid") for data in self.eval.values())
         self.add("9. Evaluation (held-out; smoke checks validity only)", valid,
                  rows + [f"- arms expected {sorted(expected_arms)}, got {sorted(self.eval)}"])

@@ -183,3 +183,96 @@ def test_report_checks_per_scenario_injection(tmp_path, monkeypatch):
     assert "retrieval top_k=2 (mmr" in text and "bad: none" in text
     assert "r2 corpus: 6 tasks ran with the top-2 of r1's bank" in text and "problems: none" in text
     assert "2-2 skills per scenario" in text
+
+
+def test_prompt_injection_pastes_the_original_memory_block(tmp_path):
+    from envharness.prompts.alfworld_skill_prompt import build_memory_block
+
+    from envharness_gaia2.skills import TEMPLATE, injected_titles, render
+    from helpers import HARNESS_TOOL, POLICY, SEED_HARNESS
+
+    items = [MemoryItem(title=f"Check {{{{x}}}} item {i}", description=f"when {i}", content=f"do {i}", embedding=[1.0]) for i in (2, 1)]
+    digest = render(items, seed_dir=SEED_HARNESS, out_dir=tmp_path / "h", policy=POLICY, harness_tool=HARNESS_TOOL,
+                    injection="prompt")
+    text = (tmp_path / "h" / TEMPLATE).read_text()
+    seed = (SEED_HARNESS / TEMPLATE).read_text()
+    block = build_memory_block(items, style="soft")
+    assert text.startswith(seed.rstrip("\n")) and "Below are some memory items" in text
+    assert "explicitly state whether any insight applies" in text  # the original per-step gate
+    assert text.index("item 2") < text.index("item 1")  # retrieval order, as the original
+    assert "{{x}}" not in text and block.replace("{{", "{ {").replace("}}", "} }") in text  # no template placeholders
+    assert not list((tmp_path / "h").glob("skills/*/SKILL.md")) and digest.startswith("sha256:")
+    assert injected_titles(tmp_path / "h") == ["Check { {x} } item 2", "Check { {x} } item 1"]
+    # no items: the seed harness unchanged (same digest as the skill_md seed)
+    empty = render([], seed_dir=SEED_HARNESS, out_dir=tmp_path / "e", policy=POLICY, harness_tool=HARNESS_TOOL,
+                   injection="prompt")
+    assert empty == render([], seed_dir=SEED_HARNESS, out_dir=tmp_path / "e2", policy=POLICY, harness_tool=HARNESS_TOOL)
+
+
+def test_injection_and_evaluation_options_are_validated(tmp_path):
+    base = yaml.safe_load(Path(_config(tmp_path)).read_text())
+    ret = {"top_k": 5, "mode": "mmr", "mmr_lambda": 0.5}
+    for extra, error in (({"retrieval": ret, "injection": {"mode": "prompt", "style": "soft"}}, None),
+                         ({"injection": {"mode": "prompt", "style": "soft"}}, ConfigError),  # prompt needs retrieval
+                         ({"retrieval": ret, "injection": {"mode": "paste", "style": "soft"}}, ConfigError),
+                         ({"evaluation": {"orig_arm": "no"}}, ConfigError)):
+        path = tmp_path / "o.yaml"
+        path.write_text(yaml.safe_dump(dict(base, **extra)))
+        if error:
+            with pytest.raises(error):
+                load_config(path, verify_image=False)
+        else:
+            cfg = load_config(path, verify_image=False)
+            assert cfg.injection.mode == "prompt" and cfg.orig_arm is True
+    assert load_config(_config(tmp_path), verify_image=False).injection.mode == "skill_md"
+
+
+def test_pipeline_prompt_injection_without_orig_arm(tmp_path):
+    from envharness_gaia2.skills import TEMPLATE, injected_titles
+
+    path = _config(tmp_path)
+    raw = yaml.safe_load(path.read_text())
+    raw.update(retrieval={"top_k": 2, "mode": "mmr", "mmr_lambda": 0.5},
+               injection={"mode": "prompt", "style": "soft"}, evaluation={"orig_arm": False})
+    path.write_text(yaml.safe_dump(raw))
+    cfg = load_config(path, verify_image=False)
+    run_dir = cfg.run_root / "prompt"
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.resolved.json").write_text(json.dumps({"config": cfg.raw}))
+    runner = FakeGaia2Runner(_outcome)
+    result = Pipeline(cfg, run_dir, gaia2=runner, designer_client=_designer(), induce_client=_inducer([]),
+                      embedder=_embed).run()
+    assert set(result["eval"]) == {"nobank", "ours_r1", "ours_r2"}  # control = nobank only
+    assert not (run_dir / "banks" / "orig.jsonl").exists()
+    bank1 = [json.loads(line)["title"] for line in (run_dir / "banks" / "ours_r1.jsonl").read_text().splitlines()]
+    for task_dir in sorted((run_dir / "rounds" / "r2" / "corpus").glob("task_*")):
+        record = json.loads((task_dir / "retrieval.json").read_text())
+        harness = Path(record["harness_dir"])
+        assert injected_titles(harness) == record["skills"] and set(record["skills"]) <= set(bank1)
+        assert "Below are some memory items" in (harness / TEMPLATE).read_text()
+        assert not list(harness.glob("skills/*/SKILL.md"))
+    for sid, titles in result["eval"]["ours_r2"]["case_skills"].items():
+        assert injected_titles(Path(result["eval"]["ours_r2"]["case_harness"][sid])) == titles
+
+
+def test_report_checks_prompt_injection(tmp_path, monkeypatch):
+    from envharness_gaia2 import report as report_mod
+
+    path = _config(tmp_path)
+    raw = yaml.safe_load(path.read_text())
+    raw.update(retrieval={"top_k": 2, "mode": "mmr", "mmr_lambda": 0.5},
+               injection={"mode": "prompt", "style": "soft"}, evaluation={"orig_arm": False})
+    path.write_text(yaml.safe_dump(raw))
+    cfg = load_config(path, verify_image=False)
+    run_dir = cfg.run_root / "rep"
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.resolved.json").write_text(json.dumps({"config": cfg.raw}))
+    Pipeline(cfg, run_dir, gaia2=FakeGaia2Runner(_outcome), designer_client=_designer(), induce_client=_inducer([]),
+             embedder=_embed).run()
+    real_run = report_mod.subprocess.run
+    monkeypatch.setattr(report_mod.subprocess, "run", lambda argv, *a, **k: (
+        report_mod.subprocess.CompletedProcess(argv, 0, "", "") if argv[0] == "sg" else real_run(argv, *a, **k)))
+    text = report_mod.Report(run_dir, {}).write().read_text()
+    for section in ("## 5. Skill banks", "## 9. Evaluation"):
+        assert text.split(section)[1].split("\n")[0].endswith("PASS"), section
+    assert "injection prompt: " in text and "bad: none" in text

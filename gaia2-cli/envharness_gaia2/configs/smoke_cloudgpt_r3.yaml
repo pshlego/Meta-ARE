@@ -72,6 +72,16 @@ retrieval:                         # every original eval injects Bank.retrieve t
   mode: mmr                        # Round r>=2 students and every eval scenario get their own top-5.
   mmr_lambda: 0.5
 
+injection:                         # how the retrieved items reach the student
+  mode: prompt                     # prompt: pasted into AGENTS.md with the original memory block (header, per-step
+                                   #   gate, "### Insight i"; experiments/alfworld build_memory_block), as every original
+                                   #   eval injects its top-k | skill_md: one OpenClaw SKILL.md per item (student opens them)
+  style: soft                      # build_memory_block style (alfworld reasoning_bank_eval.yaml inject_style: soft)
+
+evaluation:
+  orig_arm: false                  # control = nobank (the seed harness, no skills); true adds the original's "orig"
+                                   #   ablation (bank induced from unmutated baseline rollouts)
+
 coevolution:
   rounds: 3                        # 1 = the original single pass
 

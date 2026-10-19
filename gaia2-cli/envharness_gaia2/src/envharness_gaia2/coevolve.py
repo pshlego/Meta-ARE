@@ -110,13 +110,16 @@ class Pipeline:
 
     def _render(self, items, out_dir: Path) -> str:
         digest = render(items, seed_dir=self.cfg.seed_harness_dir, out_dir=out_dir, policy=self.cfg.harness_policy,
-                        harness_tool=harness_tool_path(self.cfg), forbidden_ids=self.cfg.forbidden_ids)
+                        harness_tool=harness_tool_path(self.cfg), forbidden_ids=self.cfg.forbidden_ids,
+                        injection=self.cfg.injection.mode, style=self.cfg.injection.style)
         (out_dir.parent / f"{out_dir.name}.digest").write_text(digest + "\n", encoding="utf-8")
         return digest
 
     def _student_harness(self, bank, case: CaseRef, root: Path) -> tuple[Path, list[str]]:
         """Seed + the bank's top-k for ``case`` (retrieval mode); equal selections share a harness."""
-        chosen = sorted(self.retriever.select(bank, case), key=lambda item: item.title)
+        chosen = self.retriever.select(bank, case)
+        if self.cfg.injection.mode == "skill_md":  # OpenClaw lists skills by name; the prompt keeps retrieval order
+            chosen = sorted(chosen, key=lambda item: item.title)
         if not chosen:
             return self.run_dir / "seed_harness", []
         harness = root / selection_key(chosen)
@@ -177,7 +180,7 @@ class Pipeline:
         save_bank(self.run_dir / "banks" / f"ours_r{round_no}_new.jsonl", new)
         save_bank(self.run_dir / "banks" / f"ours_r{round_no}.jsonl", bank)
         stats = {"ours": ours_stats}
-        if round_no == 1:
+        if round_no == 1 and self.cfg.orig_arm:
             if bank_cfg.mode == "alfworld_pair":
                 orig_plan, orig_condition = plan_pairs(traces_by_task, condition="orig"), "orig"
             else:
@@ -292,7 +295,7 @@ class Pipeline:
         arms = {"nobank": Arm(lambda case: (seed, []), 0)}
         banks: dict[str, tuple[Path, Path | None]] = {}  # arm -> (bank file, whole-bank harness)
         orig_bank = self.run_dir / "banks" / "orig.jsonl"
-        if orig_bank.is_file():
+        if self.cfg.orig_arm and orig_bank.is_file():
             harness = out / "harness_orig"
             if self.retriever is None and not (out / "harness_orig.digest").is_file():
                 self._render(load_bank(orig_bank), harness)

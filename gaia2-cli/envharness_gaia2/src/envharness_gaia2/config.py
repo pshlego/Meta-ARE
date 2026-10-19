@@ -41,9 +41,12 @@ _SECTIONS: dict[str, set[str] | None] = {
     "budget": {"max_rollouts"},
     "storage": {"run_root"},
     "retrieval": {"top_k", "mode", "mmr_lambda"},
+    "injection": {"mode", "style"},
+    "evaluation": {"orig_arm"},
 }
-# Optional sections; without ``retrieval`` the whole bank is rendered into skills/.
-_OPTIONAL = {"retrieval"}
+# Optional sections. Without ``retrieval`` the whole bank is rendered into skills/; without
+# ``injection`` items go in as SKILL.md files; without ``evaluation`` the orig arm is evaluated.
+_OPTIONAL = {"retrieval", "injection", "evaluation"}
 
 
 class ConfigError(ValueError):
@@ -81,6 +84,14 @@ class RetrievalConfig:
 
 
 @dataclass(frozen=True)
+class InjectionConfig:
+    """How injected bank items reach the student (skills.INJECTION_MODES)."""
+
+    mode: str = "skill_md"  # skill_md: OpenClaw SKILL.md files | prompt: the original memory block in AGENTS.md
+    style: str = "soft"  # build_memory_block style (experiments/alfworld/reasoning_bank_eval.yaml inject_style)
+
+
+@dataclass(frozen=True)
 class Config:
     path: Path
     raw: dict[str, Any]
@@ -105,6 +116,8 @@ class Config:
     max_rollouts: int
     run_root: Path
     retrieval: RetrievalConfig | None = None  # None: the whole bank goes into skills/
+    injection: InjectionConfig = InjectionConfig()
+    orig_arm: bool = True  # evaluate the bank induced from unmutated baseline rollouts (the original's ablation)
 
     @property
     def forbidden_ids(self) -> tuple[str, ...]:
@@ -207,6 +220,16 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
         retrieval = RetrievalConfig(int(ret["top_k"]), str(ret["mode"]), float(ret["mmr_lambda"]))
         if retrieval.top_k < 1 or retrieval.mode not in ("cosine", "mmr") or not 0.0 <= retrieval.mmr_lambda <= 1.0:
             raise ConfigError("retrieval: top_k >= 1, mode cosine|mmr, 0 <= mmr_lambda <= 1")
+    inj = raw.get("injection") or {"mode": "skill_md", "style": "soft"}
+    injection = InjectionConfig(str(inj["mode"]), str(inj["style"]))
+    if injection.mode not in ("skill_md", "prompt") or injection.style not in ("soft", "legacy"):
+        raise ConfigError("injection: mode skill_md|prompt, style soft|legacy")
+    if injection.mode == "prompt" and retrieval is None:
+        raise ConfigError("injection.mode prompt pastes the retrieved top-k (as the original evals do): "
+                          "add a retrieval section")
+    orig_arm = (raw.get("evaluation") or {"orig_arm": True})["orig_arm"]
+    if not isinstance(orig_arm, bool):
+        raise ConfigError("evaluation.orig_arm must be true or false")
     rounds = int(raw["coevolution"]["rounds"])
     if rounds < 1:
         raise ConfigError("coevolution.rounds must be >= 1 (1 = the original single pass)")
@@ -244,6 +267,8 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
         max_rollouts=int(budget["max_rollouts"]),
         run_root=p(raw["storage"]["run_root"]),
         retrieval=retrieval,
+        injection=injection,
+        orig_arm=orig_arm,
     )
 
 
