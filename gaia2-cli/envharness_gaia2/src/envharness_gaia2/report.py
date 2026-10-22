@@ -129,6 +129,8 @@ class Report:
         self.rounds = sorted((p for p in (run_dir / "rounds").glob("r*") if p.is_dir()), key=lambda p: int(p.name[1:]))
         repo = Path(self.config.get("config", {}).get("meta_are_repo", ""))
         self.repo = repo
+        # envrigger.designer false (ReasoningBank-style control): baseline K only, no designer
+        self.designer_off = self.config.get("config", {}).get("envrigger", {}).get("designer", True) is False
         self.sections: list[tuple[str, bool | None, list[str]]] = []
 
     def add(self, title: str, ok: bool | None, lines: list[str]) -> None:
@@ -174,8 +176,16 @@ class Report:
                   f"- interventions by lever: {by_kind}",
                   f"- Stage (setup) actions: {len(setups)} executed, {setup_ok} succeeded, "
                   f"{len(setups) - setup_ok} failed (designer command errors; see env_rules_setup.jsonl)"]
-        ok &= decisions > 0 and with_digest == len(variant_results) and (sum(by_kind.values()) + len(setups)) > 0
-        self.add("2. EnvRigger ran (baseline K -> design -> variant rollouts -> decision)", ok, lines)
+        if self.designer_off:
+            # every task: its K baseline rollouts, then the passthrough skip; nothing designed or run on a variant
+            skipped = sum(1 for round_dir in self.rounds for task_dir in (round_dir / "corpus").glob("task_*")
+                          for e in _jsonl(task_dir / "orchestrator.jsonl") if e.get("kind") == "task_skipped_passthrough")
+            n_tasks = sum(1 for round_dir in self.rounds for _ in (round_dir / "corpus").glob("task_*"))
+            ok &= decisions == skipped == n_tasks > 0 and not variant_results and not applied and not setups
+            self.add("2. Designer off: baseline K rollouts only, then the passthrough skip", ok, lines)
+        else:
+            ok &= decisions > 0 and with_digest == len(variant_results) and (sum(by_kind.values()) + len(setups)) > 0
+            self.add("2. EnvRigger ran (baseline K -> design -> variant rollouts -> decision)", ok, lines)
 
         functions = command_functions(self.repo / "gaia2-cli" / "cli" / "gaia2_cli" / "apps")
         rollouts = sorted({p.parent for p in (self.run / "rounds").rglob("env_rules_applied.jsonl")
@@ -218,8 +228,11 @@ class Report:
         texts = [json.dumps(c.get("messages", [])) for c in calls]
         with_cmd = sum(1 for t in texts if re.search(r"<action>[^<]+</action>", t))
         empty = sum(t.count("<action></action>") for t in texts)
-        self.add("4. Designer sees real commands", with_cmd > 0 and empty == 0,
-                 [f"- designer calls: {len(calls)}, with a non-empty <action>: {with_cmd}, empty <action>: {empty}"])
+        line = [f"- designer calls: {len(calls)}, with a non-empty <action>: {with_cmd}, empty <action>: {empty}"]
+        if self.designer_off:
+            self.add("4. Designer off: no designer calls", not calls, line)
+        else:
+            self.add("4. Designer sees real commands", with_cmd > 0 and empty == 0, line)
 
     # 5 + 6 -----------------------------------------------------------------------
     def banks_and_injection(self) -> None:
