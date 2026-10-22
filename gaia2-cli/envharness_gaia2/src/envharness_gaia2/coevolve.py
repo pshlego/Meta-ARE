@@ -24,6 +24,11 @@ evaluated on the dev manifest right after the round. Eval results are only writt
 to ``eval/`` and never reach the designer or the induction LLM. Tasks and round
 banks commit with DONE markers and eval arms in ``eval/summary.json``, so
 ``--resume`` continues where the run stopped.
+
+``envrigger.designer: false`` turns the designer off: each task runs only its K baseline
+rollouts in the unmodified environment, so every round's bank is induced from those
+rollouts alone (a ReasoningBank-style control with the same batches, bank build,
+retrieval and eval as the EnvHarness run).
 """
 
 from __future__ import annotations
@@ -49,7 +54,7 @@ from envharness_gaia2.bank import (
 )
 from envharness_gaia2.config import Config, load_config
 from envharness_gaia2 import designer
-from envharness_gaia2.designer import Gaia2HarnessAgent, make_client
+from envharness_gaia2.designer import Gaia2HarnessAgent, NoDesignerAgent, make_client
 from envharness_gaia2.evaluate import Arm, evaluate
 from envharness_gaia2.gaia2_run import Gaia2Runner
 from envharness_gaia2.gaia2_run import CaseRef
@@ -278,7 +283,8 @@ class Pipeline:
                 client_kwargs={"model": cfg.run.model},
                 temperature=1.0,  # nominal; satisfies the band preflight (OpenClaw samples the rollouts)
             ),
-            harness_agent=Gaia2HarnessAgent(self.designer_client, k=cfg.k, band=cfg.target_band),
+            harness_agent=(Gaia2HarnessAgent(self.designer_client, k=cfg.k, band=cfg.target_band)
+                           if cfg.designer else NoDesignerAgent()),
             objective=DifficultyZone(target_band=cfg.target_band, window=20),  # experiments/swebench/corpus.yaml
             budget=CappedAdaptive(max_k=cfg.max_k),
             trace_store=TraceStore(task_dir / "traces.jsonl"),

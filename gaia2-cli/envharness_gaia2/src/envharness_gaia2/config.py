@@ -53,7 +53,11 @@ _OPTIONAL = {"retrieval", "injection", "evaluation"}
 #   coevolution.batch_seed  shuffle the train manifest with this seed before batching (null: manifest order)
 #   evaluation.per_round    evaluate each round's bank on the dev manifest as soon as the round is committed
 #   budget.include_eval     budget.max_rollouts counts eval rollouts too (absent: corpus rollouts only)
+#   envrigger.designer      false: no environment design; each task runs only its K baseline rollouts in the
+#                           unmodified environment, so every bank is a ReasoningBank-style bank of those
+#                           rollouts (the original's ``orig`` build, round by round) (absent: true)
 _OPTIONAL_KEYS: dict[str, set[str]] = {
+    "envrigger": {"designer"},
     "coevolution": {"batch_size", "batch_seed"},
     "evaluation": {"per_round"},
     "budget": {"include_eval"},
@@ -133,6 +137,7 @@ class Config:
     batch_seed: int | None = None  # None: batches follow the train manifest order
     per_round_eval: bool = False  # evaluate ours_r<r> right after round r (else once, after the last round)
     budget_includes_eval: bool = False  # max_rollouts caps corpus + eval rollouts (else corpus only)
+    designer: bool = True  # False: baseline rollouts only, no environment design (ReasoningBank-style run)
 
     def round_tasks(self, round_no: int) -> list[int]:
         """Indices into ``train_cases`` that round ``round_no`` runs."""
@@ -238,6 +243,12 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
     band = tuple(float(x) for x in env["target_band"])
     if len(band) != 2 or not 0.0 <= band[0] < band[1] <= 1.0:
         raise ConfigError("envrigger.target_band must be [lo, hi] with 0 <= lo < hi <= 1 (DifficultyZone)")
+    use_designer = env.get("designer", True)
+    if not isinstance(use_designer, bool):
+        raise ConfigError("envrigger.designer must be true or false")
+    if not use_designer and not env["skip_passthrough_candidates"]:
+        raise ConfigError("envrigger.designer false needs skip_passthrough_candidates true "
+                          "(the empty candidate must end the task after its baseline)")
     if bank["mode"] not in ("swebench_cascade", "alfworld_pair"):
         raise ConfigError("bank.mode must be swebench_cascade or alfworld_pair")
     retrieval = None
@@ -312,6 +323,7 @@ def load_config(path: str | Path, *, verify_image: bool = True) -> Config:
         batch_seed=batch_seed,
         per_round_eval=per_round_eval,
         budget_includes_eval=include_eval,
+        designer=use_designer,
     )
 
 

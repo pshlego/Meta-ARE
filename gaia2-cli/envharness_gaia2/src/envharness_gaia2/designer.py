@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import Any, Iterable
 
 from envharness.agents.harness_agent import LLMHarnessAgent
+from envharness.core.types import Candidate
 from envharness.infra.llm import ChatResponse, LLMClient, LoggingLLMClient, ToolCall
 from envharness.reasoning_bank.induce import _is_fatal_llm_error
 
@@ -258,3 +259,18 @@ class Gaia2HarnessAgent(LLMHarnessAgent):
                 info=getattr(step, "info", None) or {},
             ))
         return LLMHarnessAgent._render_steps_for_mutator(shown, **kwargs)
+
+
+class NoDesignerAgent:
+    """``envrigger.designer: false``: proposes the empty pass-through candidate, so the original
+    orchestrator's passthrough skip ends each task right after its K baseline rollouts. No
+    environment is designed and no optimizer call is made; the bank build then falls back to
+    those baseline rollouts (a ReasoningBank-style bank of the unmodified environment)."""
+
+    def propose(self, ctx) -> Candidate:
+        return Candidate(rules_code="", in_env_actions=[], rationale="designer off: baseline rollouts only")
+
+    def decide(self, *args, **kwargs):
+        raise AssertionError("designer off: the passthrough skip ends the task before any decision")
+
+    refine = select_task = decide

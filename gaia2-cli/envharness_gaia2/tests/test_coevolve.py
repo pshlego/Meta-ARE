@@ -323,3 +323,52 @@ def test_unavailable_induction_model_stops_without_committing(tmp_path, clean_fa
                  induce_client=ScriptedClient(responder=unavailable),
                  embedder=lambda texts: [[1.0, 0.0] for _ in texts]).run()
     assert not (run_dir / "rounds" / "r1" / "DONE").exists() and not (run_dir / "lineage.jsonl").exists()
+
+
+def test_designer_off_is_a_reasoningbank_run(tmp_path):
+    """envrigger.designer false: K baseline rollouts per task in the unmodified environment, no optimizer
+    designer call, and each round's bank induced from those baseline rollouts (same batches as EnvHarness)."""
+    path = _config(tmp_path, **{"coevolution.rounds": 2, "budget.max_rollouts": 1000})
+    raw = yaml.safe_load(path.read_text())
+    raw["envrigger"]["designer"] = False
+    raw["bank"]["mode"] = "alfworld_pair"
+    raw["coevolution"].update(batch_size=3, batch_seed=7)
+    raw["evaluation"] = {"orig_arm": False, "per_round": True}
+    raw["budget"]["include_eval"] = True
+    path.write_text(yaml.safe_dump(raw))
+    cfg = load_config(path, verify_image=False)
+    assert cfg.designer is False
+    run_dir = cfg.run_root / "rb"
+    run_dir.mkdir(parents=True)
+    runner, log = FakeGaia2Runner(_outcome), []
+
+    def no_designer(messages, tools):
+        raise AssertionError("designer called with envrigger.designer false")
+
+    result = Pipeline(cfg, run_dir, gaia2=runner, designer_client=ScriptedClient(responder=no_designer),
+                      induce_client=_inducer(log), embedder=lambda texts: [[1.0, 0.0] for _ in texts]).run()
+    assert result["stopped"] is None and set(result["eval"]) == {"nobank", "ours_r1", "ours_r2"}
+    dev_ids = {d.scenario_id for d in cfg.dev_cases}
+    corpus_calls = [c for c in runner.calls if not set(c["cases"]) <= dev_ids]
+    assert corpus_calls and all(c["rules"] is None and c["k"] == cfg.k and len(c["cases"]) == 1 for c in corpus_calls)
+    assert len(corpus_calls) == 2 * 3  # one baseline batch per task, nothing after it
+    assert result["rollouts"] == 2 * 3 * cfg.k
+    assert result["eval_rollouts"] == 3 * len(cfg.dev_cases)
+    for r in (1, 2):
+        traces = [json.loads(line) for p in (run_dir / "rounds" / f"r{r}" / "corpus").glob("task_*/traces.jsonl")
+                  for line in p.read_text().splitlines()]
+        assert traces and {t.get("kind") for t in traces} == {"baseline"}
+    bank1 = (run_dir / "banks" / "ours_r1.jsonl").read_text().splitlines()
+    bank2 = (run_dir / "banks" / "ours_r2.jsonl").read_text().splitlines()
+    assert len(bank2) > len(bank1) > 0 and log
+    assert not (run_dir / "designer_calls.jsonl").exists() or not (run_dir / "designer_calls.jsonl").read_text().strip()
+
+    broken = yaml.safe_load(path.read_text())
+    broken["envrigger"]["skip_passthrough_candidates"] = False
+    path.write_text(yaml.safe_dump(broken))
+    with pytest.raises(ConfigError, match="designer"):
+        load_config(path, verify_image=False)
+    broken["envrigger"].update(skip_passthrough_candidates=True, designer="off")
+    path.write_text(yaml.safe_dump(broken))
+    with pytest.raises(ConfigError, match="designer"):
+        load_config(path, verify_image=False)
